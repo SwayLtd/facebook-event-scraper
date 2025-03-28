@@ -2,3 +2,10 @@ node_modules
 dist
 .eslintcache
 .DS_Store
+
+.env*
+soundcloud_token.json
+
+logs/
+output.json
+artists.json

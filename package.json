@@ -1,6 +1,7 @@
 {
   "name": "facebook-event-scraper",
   "version": "0.1.3",
+  "type": "module",
   "description": "A slim module for scraping Facebook event data in milliseconds.",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -40,7 +41,12 @@
   ],
   "homepage": "https://github.com/francescov1/facebook-event-scraper#readme",
   "dependencies": {
-    "axios": "^1.3.4"
+    "axios": "^1.3.4",
+    "dotenv": "^16.4.7",
+    "facebook-event-scraper": "^0.1.3",
+    "node-fetch": "^3.3.2",
+    "openai": "^4.90.0",
+    "string-similarity": "^4.0.4"
   },
   "devDependencies": {
     "@types/jest": "^29.5.0",
