@@ -9,4 +9,4 @@ soundcloud_token.json
 logs/
 output.json
 artists.json
-events_url.txt
+events_url*.txt
