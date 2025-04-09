@@ -11,6 +11,9 @@ import OpenAI from 'openai';
 // --- Global Parameters ---
 const DRY_RUN = false;            // Set true for dry-run mode (no DB writes)
 const FUZZY_THRESHOLD = 0.75;     // Similarity threshold for fuzzy matching
+const MIN_GENRE_OCCURRENCE = 3;
+
+const bannedGenres = ["other", "remix", "track", "podcast", "dance", "set"];
 
 // Read environment variables
 const supabaseUrl = process.env.SUPABASE_URL;
@@ -20,6 +23,7 @@ const googleApiKey = process.env.GOOGLE_API_KEY;      // Google Maps API key
 const openAIApiKey = process.env.OPENAI_API_KEY;      // OpenAI key
 const SOUND_CLOUD_CLIENT_ID = process.env.SOUND_CLOUD_CLIENT_ID;
 const SOUND_CLOUD_CLIENT_SECRET = process.env.SOUND_CLOUD_CLIENT_SECRET;
+const LASTFM_API_KEY = process.env.LASTFM_API_KEY;    // Pour valider les tags/genres via Last.fm
 const TOKEN_URL = 'https://api.soundcloud.com/oauth2/token';
 
 // Basic checks
@@ -43,6 +47,10 @@ if (!SOUND_CLOUD_CLIENT_ID || !SOUND_CLOUD_CLIENT_SECRET) {
     console.error("Please set SOUND_CLOUD_CLIENT_ID and SOUND_CLOUD_CLIENT_SECRET in your environment variables.");
     process.exit(1);
 }
+if (!LASTFM_API_KEY) {
+    console.error("Please set LASTFM_API_KEY in your environment variables.");
+    process.exit(1);
+}
 
 // Load geocoding exceptions
 let geocodingExceptions = {};
@@ -60,6 +68,23 @@ function getNormalizedName(originalName) {
     return originalName;
 }
 
+/*
+ * Normalisation améliorée du nom d'artiste.
+ * Supprime les caractères non alphanumériques situés au début ou à la fin,
+ * sans retirer les symboles présents à l'intérieur (ex: "SANTØS" reste inchangé,
+ * alors que "☆ fumi ☆" devient "fumi").
+ */
+function normalizeArtistNameEnhanced(name) {
+    if (!name) return name;
+    // Séparer les lettres des diacritiques
+    let normalized = name.normalize('NFD');
+    // Supprimer les marques diacritiques
+    normalized = normalized.replace(/[\u0300-\u036f]/g, "");
+    // Supprimer les caractères non alphanumériques en début et fin de chaîne
+    normalized = normalized.replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, "");
+    return normalized;
+}
+
 // Initialize Supabase client
 const supabase = createClient(supabaseUrl, serviceKey);
 
@@ -67,7 +92,6 @@ const supabase = createClient(supabaseUrl, serviceKey);
 const openai = new OpenAI({ apiKey: openAIApiKey });
 
 // --- SoundCloud Token Management ---
-// File to temporarily store the token
 const TOKEN_FILE = 'soundcloud_token.json';
 
 async function getStoredToken() {
@@ -187,7 +211,7 @@ async function getBestImageUrl(avatarUrl) {
     }
 }
 
-// --- Ensure relation in a pivot table ---
+// --- Ensure relation in a pivot table (unchanged) ---
 async function ensureRelation(table, relationData, relationName) {
     const { data, error } = await supabase
         .from(table)
@@ -205,7 +229,384 @@ async function ensureRelation(table, relationData, relationName) {
     }
 }
 
-// --- Manage Promoters (unchanged) ---
+// --- Additional Functions for Genre Management ---
+
+/**
+ * Récupère les tracks d'un artiste depuis SoundCloud, en se basant sur l'ID SoundCloud.
+ */
+async function fetchArtistTracks(soundcloudUserId, token) {
+    try {
+        const url = `https://api.soundcloud.com/users/${soundcloudUserId}/tracks?limit=10`;
+        const response = await fetch(url, {
+            headers: { "Authorization": `OAuth ${token}` }
+        });
+        const data = await response.json();
+        if (!Array.isArray(data)) {
+            console.error(`[Genres] Expected tracks to be an array but got: ${JSON.stringify(data)}`);
+            return [];
+        }
+        // console.log(`[Genres] Fetched ${data.length} tracks for SoundCloud user ${soundcloudUserId}`);
+        return data;
+    } catch (error) {
+        console.error("[Genres] Error fetching artist tracks from SoundCloud:", error);
+        return [];
+    }
+}
+
+/**
+ * Fonction utilitaire pour capitaliser chaque mot d'une chaîne.
+ * Exemple : "hard techno" -> "Hard Techno"
+ */
+function capitalizeWords(str) {
+    return str.replace(/\w\S*/g, (txt) => txt.charAt(0).toUpperCase() + txt.substr(1).toLowerCase());
+}
+
+/**
+ * Sépare un tag composé contenant des délimiteurs connus (" x ", " & ", " + ") en sous-tags.
+ */
+function splitCompoundTags(tag) {
+    const delimiters = [" x ", " & ", " + "];
+    for (const delim of delimiters) {
+        if (tag.includes(delim)) {
+            return tag.split(delim).map(t => t.trim());
+        }
+    }
+    return [tag];
+}
+
+
+/**
+ * Nettoie une description en retirant les balises HTML et en supprimant la partie "Read more on Last.fm".
+ * Si, après nettoyage, la description est trop courte (moins de 30 caractères), retourne une chaîne vide.
+ */
+function cleanDescription(desc) {
+    if (!desc) return "";
+    // Supprimer toutes les balises HTML
+    let text = desc.replace(/<[^>]*>/g, '').trim();
+    // Retirer toute occurrence de "Read more on Last.fm" (insensible à la casse)
+    text = text.replace(/read more on last\.fm/gi, '').trim();
+    // Si le texte est trop court, on considère qu'il n'y a pas de description utile
+    if (text.length < 30) {
+        return "";
+    }
+    return text;
+}
+
+/**
+ * Vérifie via Last.fm si le tag correspond à un genre musical.
+ * Extrait, si présent, l'URL du genre depuis la partie HTML du wiki.summary.
+ * Retourne un objet { valid: boolean, name: string, description: string, lastfmUrl: string }.
+ */
+async function verifyGenreWithLastFM(tagName) {
+    try {
+        const url = `http://ws.audioscrobbler.com/2.0/?method=tag.getinfo&tag=${encodeURIComponent(tagName)}&api_key=${LASTFM_API_KEY}&format=json`;
+        const response = await fetch(url);
+        const data = await response.json();
+        // Optionnel : vous pouvez commenter ou décommenter ce log
+        // console.log(`[Genres] Last.fm API response for tag "${tagName}": ${JSON.stringify(data)}`);
+        if (data && data.tag) {
+            // Récupérer le wiki summary et nettoyer la description
+            const wikiSummary = data.tag.wiki ? data.tag.wiki.summary : "";
+
+            // Extraire l'URL contenue dans la balise <a href="...">
+            let extractedUrl = "";
+            const linkMatch = wikiSummary.match(/<a href="([^"]+)">/);
+            if (linkMatch && linkMatch[1]) {
+                extractedUrl = linkMatch[1];
+            } else {
+                // Si aucun lien n'est trouvé, utiliser data.tag.url
+                extractedUrl = data.tag.url || "";
+            }
+
+            // Nettoyer la description en retirant les balises HTML et la partie "Read more on Last.fm"
+            const cleanDesc = cleanDescription(wikiSummary);
+
+            return {
+                valid: true,
+                name: data.tag.name.toLowerCase(), // conversion en minuscule pour la comparaison
+                description: cleanDesc,
+                lastfmUrl: extractedUrl
+            };
+        }
+    } catch (error) {
+        console.error("[Genres] Error verifying genre with Last.fm for tag:", tagName, error);
+    }
+    return { valid: false };
+}
+
+/**
+ * refineGenreName
+ *
+ * Cette fonction prend en paramètre un nom de genre (tel que récupéré depuis Last.fm ou une autre source)
+ * et le reformate pour un affichage plus lisible. Elle applique d'abord une capitalisation mot par mot,
+ * puis détecte et corrige certains cas particuliers (par exemple, si le nom ne contient pas d'espaces et contient
+ * le mot "techno", elle insère un espace avant "Techno"). Ce raffinement permet d'obtenir des noms de genre tels que
+ * "Hard Techno" au lieu de "Hardtechno" pour une meilleure clarté visuelle et une uniformité dans la base de données.
+ *
+ * @param {string} name - Le nom de genre à raffiner.
+ * @returns {string} - Le nom de genre reformatté pour affichage (ex. "Hard Techno").
+ */
+function refineGenreName(name) {
+    // Par défaut, on applique la capitalisation mot par mot
+    let refined = name.replace(/\w\S*/g, (txt) => txt.charAt(0).toUpperCase() + txt.substr(1).toLowerCase());
+
+    // Exemple de raffinement pour "techno" :
+    // Si le nom ne contient pas d'espace mais inclut "techno", on insère un espace avant "Techno"
+    if (!refined.includes(' ') && /techno/i.test(refined)) {
+        refined = refined.replace(/(.*)(techno)$/i, (match, p1, p2) => {
+            return p1.trim() + " " + p2.charAt(0).toUpperCase() + p2.slice(1).toLowerCase();
+        });
+    }
+    // Vous pouvez ajouter d'autres conditions si nécessaire.
+
+    return refined;
+}
+
+/**
+ * Insère le genre dans la table "genres" s'il n'existe pas déjà.
+ * D'abord, on vérifie via l'URL dans external_links ; si rien n'est trouvé, on vérifie par nom.
+ * Retourne l'ID du genre.
+ */
+async function insertGenreIfNew(genreObject) {
+    const { name, description, lastfmUrl } = genreObject;
+    // On travaille ici avec le nom original pour le raffinement
+    const normalizedName = name.toLowerCase();
+    const genreSlug = slugifyGenre(normalizedName);
+
+    // Récupérer tous les genres existants (pour détecter un doublon par slug ou external link)
+    let { data: existingGenres, error: selectError } = await supabase
+        .from('genres')
+        .select('id, name, external_links');
+    if (selectError) {
+        console.error("[Genres] Error selecting genre:", selectError);
+        throw selectError;
+    }
+
+    let duplicateGenre = null;
+    // Vérification par external_links si disponible
+    if (lastfmUrl) {
+        duplicateGenre = existingGenres.find(g => g.external_links &&
+            g.external_links.lastfm &&
+            g.external_links.lastfm.link === lastfmUrl);
+    }
+    // Sinon, vérification par le slug du nom
+    if (!duplicateGenre) {
+        duplicateGenre = existingGenres.find(g => slugifyGenre(g.name) === genreSlug);
+    }
+    if (duplicateGenre) {
+        console.log(`[Genres] Genre "${name}" already exists with ID ${duplicateGenre.id}`);
+        return duplicateGenre.id;
+    }
+
+    let externalLinks = null;
+    if (lastfmUrl) {
+        externalLinks = { lastfm: { link: lastfmUrl } };
+    }
+    // Utilisation de refineGenreName pour obtenir le titre affiché souhaité
+    const finalName = refineGenreName(name);
+    const { data: newGenre, error: insertError } = await supabase
+        .from('genres')
+        .insert({ name: finalName, description, external_links: externalLinks })
+        .select();
+    if (insertError || !newGenre) {
+        console.error("[Genres] Error inserting genre:", insertError);
+        throw insertError || new Error("Genre insertion failed");
+    }
+    console.log(`[Genres] Genre inserted: ${finalName} (id=${newGenre[0].id}) with description: ${description} and external_links: ${JSON.stringify(externalLinks)}`);
+    return newGenre[0].id;
+}
+
+/**
+ * Lie un artiste à un genre dans la table pivot "artist_genre".
+ */
+async function linkArtistGenre(artistId, genreId) {
+    const { data, error } = await supabase
+        .from('artist_genre')
+        .select('*')
+        .match({ artist_id: artistId, genre_id: genreId });
+    if (error) throw error;
+    if (!data || data.length === 0) {
+        const { error: insertError } = await supabase
+            .from('artist_genre')
+            .insert({ artist_id: artistId, genre_id: genreId });
+        if (insertError) throw insertError;
+        console.log(`[Genres] Linked artist (id=${artistId}) to genre (id=${genreId}).`);
+    } else {
+        console.log(`[Genres] Artist (id=${artistId}) already linked to genre (id=${genreId}).`);
+    }
+}
+
+/**
+ * Extrait et normalise les tags d'un track.
+ * On se base sur le champ "genre" et "tag_list". Renvoie un tableau de tags en minuscules.
+ */
+function extractTagsFromTrack(track) {
+    let tags = [];
+    if (track.genre) {
+        tags.push(track.genre.toLowerCase().trim());
+    }
+    if (track.tag_list) {
+        const rawTags = track.tag_list.split(/\s+/);
+        rawTags.forEach(tag => {
+            tag = tag.replace(/^#/, "").toLowerCase().trim();
+            if (tag && !tags.includes(tag)) {
+                tags.push(tag);
+            }
+        });
+    }
+    console.log(`[Genres] For track "${track.title || 'unknown'}", extracted tags: ${JSON.stringify(tags)}`);
+    return tags;
+}
+
+function slugifyGenre(name) {
+    // Supprime tous les caractères non alphanumériques pour obtenir une version condensée.
+    return name.replace(/\W/g, "").toLowerCase();
+}
+
+/**
+ * Pour un artiste, utilise l'API SoundCloud pour récupérer ses tracks,
+ * extrait les tags et vérifie via Last.fm lesquels correspondent à des genres musicaux.
+ * Retourne un tableau d'objets genre validés.
+ */
+async function processArtistGenres(artistData) {
+    let genresFound = [];
+    if (!artistData.external_links || !artistData.external_links.soundcloud || !artistData.external_links.soundcloud.id) {
+        console.log(`[Genres] No SoundCloud external link found for artist "${artistData.name}"`);
+        return genresFound;
+    }
+    const soundcloudUserId = artistData.external_links.soundcloud.id;
+    const token = await getAccessToken();
+    if (!token) {
+        console.log("[Genres] No SoundCloud token available");
+        return genresFound;
+    }
+    const tracks = await fetchArtistTracks(soundcloudUserId, token);
+    let allTags = [];
+    for (const track of tracks) {
+        let tags = extractTagsFromTrack(track);
+        // Pour chaque tag, s'il s'agit d'un tag composé, le diviser en sous-tags
+        let splitted = [];
+        tags.forEach(tag => {
+            splitted = splitted.concat(splitCompoundTags(tag));
+        });
+        // Filtrer les tags qui ne contiennent pas au moins une lettre (par exemple "240")
+        splitted = splitted.filter(tag => /[a-zA-Z]/.test(tag));
+        allTags = allTags.concat(splitted);
+    }
+    // Conserver uniquement les tags uniques
+    allTags = Array.from(new Set(allTags));
+    // console.log(`[Genres] Aggregated unique tags for artist "${artistData.name}": ${JSON.stringify(allTags)}`);
+
+    // Vérifier chaque tag via Last.fm
+    for (const tag of allTags) {
+        console.log(`[Genres] Verifying tag "${tag}" via Last.fm...`);
+        const genreVerification = await verifyGenreWithLastFM(tag);
+        // console.log(`[Genres] Last.fm result for tag "${tag}": ${JSON.stringify(genreVerification)}`);
+        if (genreVerification.valid && genreVerification.description) {
+            // Filtrer les genres génériques (en comparant en slug)
+            const genreSlug = slugifyGenre(genreVerification.name);
+            if (bannedGenres.includes(genreSlug)) {
+                console.log(`[Genres] Genre "${genreVerification.name}" skipped: generic genre.`);
+                continue;
+            }
+            genresFound.push({
+                name: genreVerification.name, // stocké en minuscule pour la comparaison
+                description: genreVerification.description,
+                lastfmUrl: genreVerification.lastfmUrl
+            });
+        } else {
+            console.log(`[Genres] Tag "${tag}" skipped: not a valid genre or description deemed insufficient.`);
+        }
+    }
+
+    console.log(`[Genres] Final genres found for artist "${artistData.name}": ${JSON.stringify(genresFound)}`);
+    return genresFound;
+}
+
+/**
+ * Déduit les genres d'un événement à partir des artistes qui y participent.
+ * Seules les occurrences d'un même genre atteignant MIN_GENRE_OCCURRENCE seront affectées à l'événement.
+ * Retourne une liste unique d'ID de genres retenus.
+ */
+async function assignEventGenres(eventId) {
+    // Récupérer toutes les liaisons artist-genre pour les artistes de l'événement.
+    const { data: eventArtists, error: eaError } = await supabase
+        .from('event_artist')
+        .select('artist_id');
+    if (eaError) throw eaError;
+
+    // Compteur de fréquence pour les genres
+    const genreCounts = {};
+
+    for (const row of eventArtists) {
+        // Chaque row.artist_id est un tableau de chaînes
+        for (const aid of row.artist_id) {
+            const { data: artistGenres, error: agError } = await supabase
+                .from('artist_genre')
+                .select('genre_id')
+                .eq('artist_id', parseInt(aid));
+            if (agError) throw agError;
+            if (artistGenres) {
+                artistGenres.forEach(g => {
+                    const genreId = g.genre_id;
+                    genreCounts[genreId] = (genreCounts[genreId] || 0) + 1;
+                });
+            }
+        }
+    }
+
+    // Filtrer pour ne conserver que les genres atteignant le seuil
+    const retainedGenreIds = Object.keys(genreCounts)
+        .filter(genreId => genreCounts[genreId] >= MIN_GENRE_OCCURRENCE);
+
+    console.log(`[Genres] Aggregated genre IDs for event ${eventId} (threshold ${MIN_GENRE_OCCURRENCE}): ${JSON.stringify(retainedGenreIds)}`);
+
+    for (const genreId of retainedGenreIds) {
+        await ensureRelation("event_genre", { event_id: eventId, genre_id: genreId }, "event_genre");
+    }
+    return retainedGenreIds;
+}
+
+/**
+ * Pour un promoteur, déduit les genres en se basant sur l'ensemble des événements auxquels il participe.
+ * Seules les occurrences d'un même genre atteignant MIN_GENRE_OCCURRENCE seront affectées au promoteur.
+ */
+async function assignPromoterGenres(promoterId) {
+    // Récupérer les événements liés au promoteur
+    const { data: promoterEvents, error: peError } = await supabase
+        .from('event_promoter')
+        .select('event_id')
+        .eq('promoter_id', promoterId);
+    if (peError) throw peError;
+
+    // Compter la fréquence des genres pour l'ensemble des événements du promoteur
+    const genreCounts = {};
+    for (const row of promoterEvents) {
+        const { data: eventGenres, error: egError } = await supabase
+            .from('event_genre')
+            .select('genre_id')
+            .eq('event_id', row.event_id);
+        if (egError) throw egError;
+        if (eventGenres) {
+            eventGenres.forEach(g => {
+                genreCounts[g.genre_id] = (genreCounts[g.genre_id] || 0) + 1;
+            });
+        }
+    }
+
+    // Garder uniquement les genres dont la fréquence est >= MIN_GENRE_OCCURRENCE
+    const retainedGenreIds = Object.keys(genreCounts)
+        .filter(genreId => genreCounts[genreId] >= MIN_GENRE_OCCURRENCE);
+
+    console.log(`[Genres] Aggregated genre IDs for promoter ${promoterId} (threshold ${MIN_GENRE_OCCURRENCE}): ${JSON.stringify(retainedGenreIds)}`);
+
+    // Créer la relation dans la table pivot pour chacun des genres retenus
+    for (const genreId of retainedGenreIds) {
+        await ensureRelation("promoter_genre", { promoter_id: promoterId, genre_id: genreId }, "promoter_genre");
+    }
+}
+
+// --- Existing Manage Promoters (unchanged) ---
 async function findOrInsertPromoter(promoterName, eventData) {
     const normalizedName = getNormalizedName(promoterName);
     const { data: exactMatches, error: exactError } = await supabase
@@ -250,12 +651,16 @@ async function findOrInsertPromoter(promoterName, eventData) {
 }
 
 // --- Manage Artists ---
+// --- Manage Artists ---
 async function findOrInsertArtist(artistObj) {
     // artistObj: { name, time, soundcloud, stage, performance_mode }
-    const artistName = (artistObj.name || '').trim();
+    let artistName = (artistObj.name || '').trim();
     if (!artistName) return null;
 
-    // Get SoundCloud token and search for the artist on SoundCloud
+    // Normalisation du nom pour enlever les caractères parasites et diacritiques
+    artistName = normalizeArtistNameEnhanced(artistName);
+
+    // Obtenir le token SoundCloud et chercher l'artiste sur SoundCloud
     const token = await getAccessToken();
     let scArtist = null;
     if (token) {
@@ -263,16 +668,17 @@ async function findOrInsertArtist(artistObj) {
     }
     let artistData = null;
     if (scArtist) {
+        // extractArtistInfo retourne l'objet tel que fourni par l'API SoundCloud
         artistData = await extractArtistInfo(scArtist);
     } else {
-        // Fallback: use OpenAI prompt info if SoundCloud doesn't return anything
+        // Fallback : utiliser les données fournies par le prompt OpenAI
         artistData = {
             name: artistName,
             external_links: artistObj.soundcloud ? { soundcloud: { link: artistObj.soundcloud } } : null,
         };
     }
 
-    // Check for duplicates by external link if available
+    // Vérification des doublons via le lien externe SoundCloud
     if (artistData.external_links && artistData.external_links.soundcloud && artistData.external_links.soundcloud.id) {
         const { data: existingByExternal, error: extError } = await supabase
             .from('artists')
@@ -285,7 +691,7 @@ async function findOrInsertArtist(artistObj) {
         }
     }
 
-    // Check for duplicate by name
+    // Vérification des doublons via le nom
     const { data: existingByName, error: nameError } = await supabase
         .from('artists')
         .select('*')
@@ -296,14 +702,28 @@ async function findOrInsertArtist(artistObj) {
         return existingByName[0].id;
     }
 
-    // Insert new artist
+    // Insertion du nouvel artiste
     const { data: inserted, error: insertError } = await supabase
         .from('artists')
         .insert(artistData)
         .select();
     if (insertError || !inserted) throw insertError || new Error("Could not insert artist");
     console.log(`✅ Artist inserted: name="${artistName}", id=${inserted[0].id}`);
-    return inserted[0].id;
+
+    const newArtistId = inserted[0].id;
+
+    // Traitement des genres et liaison avec l'artiste
+    try {
+        const genres = await processArtistGenres(artistData);
+        for (const genreObj of genres) {
+            const genreId = await insertGenreIfNew(genreObj);
+            await linkArtistGenre(newArtistId, genreId);
+        }
+    } catch (err) {
+        console.error("Error processing genres for artist:", artistName, err);
+    }
+
+    return newArtistId;
 }
 
 async function searchArtist(artistName, accessToken) {
@@ -343,30 +763,22 @@ async function extractArtistInfo(artist) {
     };
 }
 
-// --- Create event_artist relation ---
-// Prevent duplicate event_artist relations when an artist's performance slot is identical.
-// Duplicate checking is based on event_id, stage, custom_name, start_time, and end_time.
-// Uses .is() to check for null values in start_time and end_time.
+// --- Create event_artist relation (unchanged) ---
 async function createEventArtistRelation(eventId, artistId, artistObj) {
     if (!artistId) return;
-
-    // Convert artistId to a string since the DB stores it as text in an array.
     const artistIdStr = String(artistId);
 
     let startTime = null;
     let endTime = null;
-    // Do not store performance_mode; custom_name is always null.
     const stage = artistObj.stage || null;
     const customName = null;
 
     if (artistObj.time && artistObj.time.trim() !== "") {
-        // Expected format: "21:30-22:30"
         const match = artistObj.time.match(/(\d{1,2}:\d{2})-?(\d{1,2}:\d{2})?/);
         if (match) {
             const startStr = match[1];
             const endStr = match[2] || null;
             if (startStr) {
-                // Optionally replace with the actual event date if available
                 startTime = `2025-06-27T${startStr}:00`;
             }
             if (endStr) {
@@ -375,37 +787,27 @@ async function createEventArtistRelation(eventId, artistId, artistObj) {
         }
     }
 
-    // Build query to find an existing row with the same event and performance details.
     let query = supabase
         .from('event_artist')
         .select('*')
         .eq('event_id', eventId);
 
-    // For stage:
     if (stage === null) {
         query = query.is('stage', null);
     } else {
         query = query.eq('stage', stage);
     }
-
-    // For custom_name (always null):
     query = query.is('custom_name', null);
-
-    // For start_time:
     if (startTime === null) {
         query = query.is('start_time', null);
     } else {
         query = query.eq('start_time', startTime);
     }
-
-    // For end_time:
     if (endTime === null) {
         query = query.is('end_time', null);
     } else {
         query = query.eq('end_time', endTime);
     }
-
-    // Use the .contains operator to check if the "artist_id" array contains the artistIdStr.
     query = query.contains('artist_id', [artistIdStr]);
 
     const { data: existing, error } = await query;
@@ -413,13 +815,11 @@ async function createEventArtistRelation(eventId, artistId, artistObj) {
         console.error("Error during existence check:", error);
         throw error;
     }
-
     if (existing && existing.length > 0) {
         console.log(`➡️ A row already exists for artist_id=${artistIdStr} with the same performance details.`);
         return;
     }
 
-    // No matching row found: insert a new row for this artist.
     const row = {
         event_id: eventId,
         artist_id: [artistIdStr],
@@ -447,7 +847,6 @@ const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 // --- MAIN SCRIPT ---
 async function main() {
     try {
-        // Get event URL from command-line arguments
         const eventUrl = process.argv[2];
         if (!eventUrl) {
             console.error('❌ Please specify a Facebook Events URL. Example:');
@@ -459,7 +858,6 @@ async function main() {
         const eventData = await scrapeFbEvent(eventUrl);
         console.log(`✅ Scraped data for event: "${eventData.name}" (Facebook ID: ${eventData.id})`);
 
-        // --- Standard Data Transformation (promoters, venue, dates) ---
         const eventName = eventData.name || null;
         const eventDescription = eventData.description || null;
         const eventType = (eventData.categories && eventData.categories.length) ? eventData.categories[0].label : null;
@@ -467,10 +865,8 @@ async function main() {
         const endTimeISO = eventData.endTimestamp ? new Date(eventData.endTimestamp * 1000).toISOString() : null;
         const fbEventUrl = eventData.url || eventUrl;
 
-        // --- Promoters ---
         const promotersList = eventData.hosts ? eventData.hosts.map(h => h.name) : [];
 
-        // --- Venue ---
         const location = eventData.location || null;
         const venueName = location ? location.name : null;
         let venueAddress = location ? location.address : null;
@@ -479,7 +875,6 @@ async function main() {
         const venueLatitude = (location && location.coordinates) ? location.coordinates.latitude : null;
         const venueLongitude = (location && location.coordinates) ? location.coordinates.longitude : null;
 
-        // Address verification via Google Maps / Nominatim
         if (!venueAddress && venueName) {
             console.log(`\n🔍 No address found from Facebook for venue "${venueName}". Querying Google Maps...`);
             const googleResult = await fetchAddressFromGoogle(venueName);
@@ -680,39 +1075,41 @@ async function main() {
         let parsedArtists = [];
         if (eventDescription) {
             const systemPrompt = `
-You are an expert at extracting structured data from Facebook Event descriptions. Your task is to analyze the provided text and extract information solely about the artists, generating a valid JSON output. For each artist identified, extract the following elements if they are present:
+                You are an expert at extracting structured data from Facebook Event descriptions. Your task is to analyze the provided text and extract information solely about the artists. Assume that each line of the text (separated by line breaks) represents one artist's entry, unless it clearly contains a collaboration indicator (such as "B2B", "F2F", "B3B", or "VS"), in which case treat each artist separately. 
 
-- name: The name of the artist.
-- time: The performance time, if mentioned.
-- soundcloud: The SoundCloud link for the artist, if provided.
-- stage: The stage associated with the artist (only one stage per artist).
-- performance_mode: The performance mode associated with the artist. Look for indicators like "B2B", "F2F", "B3B", or "VS". If an artist is involved in a collaborative performance (e.g., B2B, F2F, B3B, or VS), record the specific mode here. If no such label is found, leave this value empty.
+                For each artist identified, extract the following elements if they are present:
+                - name: The name of the artist. IMPORTANT: Remove any trailing suffixes such as "A/V". In a line where the text starts with a numeric identifier followed by additional text (for example, "999999999 DOMINION A/V"), output only the numeric identifier. For other names, simply remove suffixes like " A/V" so that "I HATE MODELS A/V" becomes "I HATE MODELS".
+                - time: The performance time, if mentioned.
+                - soundcloud: The SoundCloud link for the artist, if provided.
+                - stage: The stage associated with the artist (only one stage per artist).
+                - performance_mode: The performance mode associated with the artist. Look for collaboration indicators (B2B, F2F, B3B, VS). If an artist is involved in a collaborative performance, record the specific mode here; otherwise leave this value empty.
 
-The output must be a JSON array where each artist is represented as an object with these keys, for example:
-[
-  {
-    "name": "Reinier Zonneveld",
-    "time": "18:00",
-    "soundcloud": "",
-    "stage": "KARROSSERIE",
-    "performance_mode": ""
-  }
-]
+                The output must be a valid JSON array where each artist is represented as an object with these keys. For example:
+                [
+                {
+                    "name": "Reinier Zonneveld",
+                    "time": "18:00",
+                    "soundcloud": "",
+                    "stage": "KARROSSERIE",
+                    "performance_mode": ""
+                }
+                ]
 
-Additional Instructions:
-- Use only the provided text for extraction.
-- If any piece of information (time, SoundCloud link, stage, or performance_mode) is missing, you may leave the value as an empty string.
-- Ensure that artists indicated with collaboration modes (B2B, F2F, B3B, or VS) are individually extracted with the corresponding performance_mode value.
-- The generated JSON must be valid and strictly follow the structure requested.
-- The output should be in English.
-      `.trim();
+                Additional Instructions:
+                - Use only the provided text for extraction.
+                - Treat each line as a separate artist entry unless a collaboration indicator suggests multiple names.
+                - If any piece of information (time, SoundCloud link, stage, performance_mode) is missing, use an empty string.
+                - The generated JSON must be valid and strictly follow the structure requested.
+                - The output should be in English.
+                `.trim();
+
             const userPrompt = `
 Text to Analyze:
 
 \`\`\`
 ${eventDescription}
 \`\`\`
-      `.trim();
+            `.trim();
 
             try {
                 const response = await openai.chat.completions.create({
@@ -732,6 +1129,8 @@ ${eventDescription}
                     .trim();
                 parsedArtists = JSON.parse(artistsJSON);
                 console.log("➡️ OpenAI parsed artists:", parsedArtists);
+                // Écriture de la sortie OpenAI dans le fichier "artists.json"
+                fs.writeFileSync('artists.json', JSON.stringify(parsedArtists, null, 2));
             } catch (err) {
                 console.error("❌ Could not parse artists from OpenAI response:", err);
             }
@@ -766,6 +1165,27 @@ ${eventDescription}
             console.log("✅ Event import done. No artists found via OpenAI.");
         } else if (DRY_RUN) {
             console.log("✅ DRY_RUN completed. (No actual writes to the DB.)");
+        }
+
+        // --- (7) Post-processing: Deduce and assign event genres and promoter genres ---
+        if (!DRY_RUN && eventId) {
+            try {
+                await assignEventGenres(eventId);
+                console.log("✅ Event genres assigned.");
+            } catch (err) {
+                console.error("Error assigning event genres:", err);
+            }
+        }
+        if (!DRY_RUN && promoterIds.length > 0) {
+            for (const promoterId of promoterIds) {
+                if (!promoterId) continue;
+                try {
+                    await assignPromoterGenres(promoterId);
+                    console.log(`✅ Genres assigned for promoter id=${promoterId}.`);
+                } catch (err) {
+                    console.error(`Error assigning genres for promoter id=${promoterId}:`, err);
+                }
+            }
         }
 
     } catch (err) {
