@@ -555,16 +555,19 @@ async function assignEventGenres(eventId) {
         }
     }
 
-    // Filtrer pour ne conserver que les genres atteignant le seuil
-    const retainedGenreIds = Object.keys(genreCounts)
-        .filter(genreId => genreCounts[genreId] >= MIN_GENRE_OCCURRENCE);
+    // Tri des genres par ordre décroissant de leurs occurences puis limitation aux 5 premiers
+    const topGenreIds = Object.entries(genreCounts)
+        .sort((a, b) => b[1] - a[1]) // Tri descendant selon le count
+        .slice(0, 5) // Limitation à 5
+        .map(entry => entry[0]); // Récupérer uniquement les IDs de genre
 
-    console.log(`[Genres] Aggregated genre IDs for event ${eventId} (threshold ${MIN_GENRE_OCCURRENCE}): ${JSON.stringify(retainedGenreIds)}`);
+    console.log(`[Genres] Top genres IDs pour événement ${eventId}: ${JSON.stringify(topGenreIds)}`);
 
-    for (const genreId of retainedGenreIds) {
+    // Création de la relation dans la table pivot pour chacun des 5 genres retenus
+    for (const genreId of topGenreIds) {
         await ensureRelation("event_genre", { event_id: eventId, genre_id: genreId }, "event_genre");
     }
-    return retainedGenreIds;
+    return topGenreIds;
 }
 
 /**
@@ -594,14 +597,16 @@ async function assignPromoterGenres(promoterId) {
         }
     }
 
-    // Garder uniquement les genres dont la fréquence est >= MIN_GENRE_OCCURRENCE
-    const retainedGenreIds = Object.keys(genreCounts)
-        .filter(genreId => genreCounts[genreId] >= MIN_GENRE_OCCURRENCE);
+    // Tri des genres par ordre décroissant et limitation aux 5 premiers
+    const topGenreIds = Object.entries(genreCounts)
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 5)
+        .map(entry => entry[0]);
 
-    console.log(`[Genres] Aggregated genre IDs for promoter ${promoterId} (threshold ${MIN_GENRE_OCCURRENCE}): ${JSON.stringify(retainedGenreIds)}`);
+    console.log(`[Genres] Top genres IDs pour promoteur ${promoterId}: ${JSON.stringify(topGenreIds)}`);
 
-    // Créer la relation dans la table pivot pour chacun des genres retenus
-    for (const genreId of retainedGenreIds) {
+    // Création de la relation dans la table pivot pour chacun des genres retenus
+    for (const genreId of topGenreIds) {
         await ensureRelation("promoter_genre", { promoter_id: promoterId, genre_id: genreId }, "promoter_genre");
     }
 }
