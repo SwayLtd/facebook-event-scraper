@@ -11,9 +11,9 @@ import OpenAI from 'openai';
 // --- Global Parameters ---
 const DRY_RUN = false;            // Set true for dry-run mode (no DB writes)
 const FUZZY_THRESHOLD = 0.75;     // Similarity threshold for fuzzy matching
-const MIN_GENRE_OCCURRENCE = 3;
+const MIN_GENRE_OCCURRENCE = 10;
 
-const bannedGenres = ["other", "remix", "track", "podcast", "dance", "set"];
+const bannedGenres = ["other", "remix", "track", "podcast", "dance", "set", "festival", "ecstacy", "uk", "live", "paris", "internet", "episode", "r", "club", "dj", "mix", "radio", "soundcloud", "sesh"];
 
 // Read environment variables
 const supabaseUrl = process.env.SUPABASE_URL;
@@ -519,7 +519,7 @@ async function processArtistGenres(artistData) {
         }
     }
 
-    console.log(`[Genres] Final genres found for artist "${artistData.name}": ${JSON.stringify(genresFound)}`);
+    // console.log(`[Genres] Final genres found for artist "${artistData.name}": ${JSON.stringify(genresFound)}`);
     return genresFound;
 }
 

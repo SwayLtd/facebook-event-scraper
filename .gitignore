@@ -10,3 +10,4 @@ logs/
 output.json
 artists.json
 events_url*.txt
+/events_url/
