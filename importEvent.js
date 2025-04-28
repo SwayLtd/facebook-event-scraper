@@ -11,9 +11,9 @@ import OpenAI from 'openai';
 // --- Global Parameters ---
 const DRY_RUN = false;            // Set true for dry-run mode (no DB writes)
 const FUZZY_THRESHOLD = 0.75;     // Similarity threshold for fuzzy matching
-const MIN_GENRE_OCCURRENCE = 10;
+const MIN_GENRE_OCCURRENCE = 2; // Minimum occurrences for genre assignment
 
-const bannedGenres = ["other", "remix", "track", "podcast", "dance", "set", "festival", "ecstacy", "uk", "live", "paris", "internet", "episode", "r", "club", "dj", "mix", "radio", "soundcloud", "sesh"];
+const bannedGenres = ["other", "mixtape", "electronic", "belgian", "rave", "oldschool", "music", "remix", "track", "podcast", "dance", "set", "festival", "ecstacy", "uk", "live", "paris", "internet", "episode", "r", "D", "club", "dj", "mix", "radio", "soundcloud", "sesh"];
 
 // Read environment variables
 const supabaseUrl = process.env.SUPABASE_URL;
@@ -93,6 +93,15 @@ const openai = new OpenAI({ apiKey: openAIApiKey });
 
 // --- SoundCloud Token Management ---
 const TOKEN_FILE = 'soundcloud_token.json';
+
+// Charger en mémoire les IDs des genres bannis
+// Après avoir instancié `supabase = createClient(...)` :
+const { data: bannedGenreRecords, error: bannedError } = await supabase
+    .from('genres')
+    .select('id')
+    .in('name', bannedGenres.map(g => refineGenreName(g)));
+if (bannedError) throw bannedError;
+const bannedGenreIds = bannedGenreRecords.map(r => r.id);
 
 async function getStoredToken() {
     if (fs.existsSync(TOKEN_FILE)) {
@@ -469,11 +478,19 @@ function slugifyGenre(name) {
  * Retourne un tableau d'objets genre validés.
  */
 async function processArtistGenres(artistData) {
-    let genresFound = [];
-    if (!artistData.external_links || !artistData.external_links.soundcloud || !artistData.external_links.soundcloud.id) {
-        console.log(`[Genres] No SoundCloud external link found for artist "${artistData.name}"`);
+    const genresFound = [];
+
+    // 1) Vérifier que l'artiste a bien un lien SoundCloud
+    if (
+        !artistData.external_links ||
+        !artistData.external_links.soundcloud ||
+        !artistData.external_links.soundcloud.id
+    ) {
+        console.log(`[Genres] No SoundCloud external link for "${artistData.name}"`);
         return genresFound;
     }
+
+    // 2) Récupérer les tracks
     const soundcloudUserId = artistData.external_links.soundcloud.id;
     const token = await getAccessToken();
     if (!token) {
@@ -481,134 +498,197 @@ async function processArtistGenres(artistData) {
         return genresFound;
     }
     const tracks = await fetchArtistTracks(soundcloudUserId, token);
+
+    // 3) Extraire et dédupliquer tous les tags
     let allTags = [];
     for (const track of tracks) {
-        let tags = extractTagsFromTrack(track);
-        // Pour chaque tag, s'il s'agit d'un tag composé, le diviser en sous-tags
+        const tags = extractTagsFromTrack(track);
         let splitted = [];
-        tags.forEach(tag => {
-            splitted = splitted.concat(splitCompoundTags(tag));
-        });
-        // Filtrer les tags qui ne contiennent pas au moins une lettre (par exemple "240")
-        splitted = splitted.filter(tag => /[a-zA-Z]/.test(tag));
-        allTags = allTags.concat(splitted);
+        tags.forEach(t => { splitted = splitted.concat(splitCompoundTags(t)); });
+        allTags = allTags.concat(splitted.filter(t => /[a-zA-Z]/.test(t)));
     }
-    // Conserver uniquement les tags uniques
     allTags = Array.from(new Set(allTags));
-    // console.log(`[Genres] Aggregated unique tags for artist "${artistData.name}": ${JSON.stringify(allTags)}`);
 
-    // Vérifier chaque tag via Last.fm
-    for (const tag of allTags) {
-        console.log(`[Genres] Verifying tag "${tag}" via Last.fm...`);
-        const genreVerification = await verifyGenreWithLastFM(tag);
-        // console.log(`[Genres] Last.fm result for tag "${tag}": ${JSON.stringify(genreVerification)}`);
-        if (genreVerification.valid && genreVerification.description) {
-            // Filtrer les genres génériques (en comparant en slug)
-            const genreSlug = slugifyGenre(genreVerification.name);
-            if (bannedGenres.includes(genreSlug)) {
-                console.log(`[Genres] Genre "${genreVerification.name}" skipped: generic genre.`);
-                continue;
+    // 4) Alias DnB → genre_id 437
+    const aliasTagIds = {
+        'dnb': 437,
+        'drumnbass': 437,
+        "drum'n'bass": 437,
+        'drumandbass': 437,
+    };
+
+    // 5) Parcourir chaque tag
+    for (const rawTag of allTags) {
+        const tag = rawTag.toLowerCase().trim();
+
+        // 5a) Si alias, forcer l'ID 437
+        if (aliasTagIds[tag]) {
+            const id = aliasTagIds[tag];
+            console.log(`[Genres] Alias DnB detected ("${tag}") → forcing genre_id ${id}`);
+            if (!genresFound.some(g => g.id === id)) {
+                genresFound.push({ id });
             }
-            genresFound.push({
-                name: genreVerification.name, // stocké en minuscule pour la comparaison
-                description: genreVerification.description,
-                lastfmUrl: genreVerification.lastfmUrl
-            });
+            continue;
+        }
+
+        // 5b) Sinon, validation via Last.fm
+        console.log(`[Genres] Verifying "${tag}" via Last.fm…`);
+        const v = await verifyGenreWithLastFM(tag);
+        if (v.valid && v.description) {
+            const slug = slugifyGenre(v.name);
+            if (!bannedGenres.includes(slug)) {
+                genresFound.push({
+                    name: v.name,
+                    description: v.description,
+                    lastfmUrl: v.lastfmUrl
+                });
+            } else {
+                console.log(`[Genres] Skipping generic genre "${v.name}".`);
+            }
         } else {
-            console.log(`[Genres] Tag "${tag}" skipped: not a valid genre or description deemed insufficient.`);
+            console.log(`[Genres] Skipping invalid or too-short tag "${tag}".`);
         }
     }
 
-    // console.log(`[Genres] Final genres found for artist "${artistData.name}": ${JSON.stringify(genresFound)}`);
     return genresFound;
 }
 
 /**
  * Déduit les genres d'un événement à partir des artistes qui y participent.
- * Seules les occurrences d'un même genre atteignant MIN_GENRE_OCCURRENCE seront affectées à l'événement.
- * Retourne une liste unique d'ID de genres retenus.
+ * Seules les occurrences d'un même genre atteignant MIN_GENRE_OCCURRENCE
+ * ET NON bannies seront affectées à l'événement. Retourne la liste d'IDs retenus.
  */
 async function assignEventGenres(eventId) {
-    // Récupérer toutes les liaisons artist-genre pour les artistes de l'événement.
+    // 1) Récupérer les artists de l’event
     const { data: eventArtists, error: eaError } = await supabase
         .from('event_artist')
-        .select('artist_id');
+        .select('artist_id')
+        .eq('event_id', eventId);
     if (eaError) throw eaError;
 
-    // Compteur de fréquence pour les genres
+    // 2) Compter les genres
     const genreCounts = {};
-
-    for (const row of eventArtists) {
-        // Chaque row.artist_id est un tableau de chaînes
-        for (const aid of row.artist_id) {
+    for (const { artist_id } of eventArtists) {
+        for (const aid of artist_id) {
             const { data: artistGenres, error: agError } = await supabase
                 .from('artist_genre')
                 .select('genre_id')
-                .eq('artist_id', parseInt(aid));
+                .eq('artist_id', parseInt(aid, 10));
             if (agError) throw agError;
-            if (artistGenres) {
-                artistGenres.forEach(g => {
-                    const genreId = g.genre_id;
-                    genreCounts[genreId] = (genreCounts[genreId] || 0) + 1;
-                });
-            }
+            artistGenres.forEach(g => {
+                genreCounts[g.genre_id] = (genreCounts[g.genre_id] || 0) + 1;
+            });
         }
     }
 
-    // Tri des genres par ordre décroissant de leurs occurences puis limitation aux 5 premiers
-    const topGenreIds = Object.entries(genreCounts)
-        .sort((a, b) => b[1] - a[1]) // Tri descendant selon le count
-        .slice(0, 5) // Limitation à 5
-        .map(entry => entry[0]); // Récupérer uniquement les IDs de genre
+    // 3) Premier filtre : seuil + exclusion des bannis
+    let topGenreIds = Object.entries(genreCounts)
+        .filter(([genreId, count]) =>
+            count >= MIN_GENRE_OCCURRENCE &&
+            !bannedGenreIds.includes(Number(genreId))
+        )
+        .sort(([, a], [, b]) => b - a)
+        .slice(0, 5)
+        .map(([genreId]) => Number(genreId));
 
-    console.log(`[Genres] Top genres IDs pour événement ${eventId}: ${JSON.stringify(topGenreIds)}`);
+    // 4) Fallback plus permissif : on ignore le seuil, mais pas les bannis
+    if (topGenreIds.length === 0) {
+        topGenreIds = Object.entries(genreCounts)
+            .filter(([genreId]) => !bannedGenreIds.includes(Number(genreId)))
+            .sort(([, a], [, b]) => b - a)
+            .slice(0, 3)
+            .map(([genreId]) => Number(genreId));
 
-    // Création de la relation dans la table pivot pour chacun des 5 genres retenus
-    for (const genreId of topGenreIds) {
-        await ensureRelation("event_genre", { event_id: eventId, genre_id: genreId }, "event_genre");
+        console.log(
+            `[Genres] Aucun genre ≥ ${MIN_GENRE_OCCURRENCE} occurences non-banni pour event ${eventId}, ` +
+            `fallback top 3 sans seuil :`,
+            topGenreIds
+        );
+    } else {
+        console.log(
+            `[Genres] Top genres pour event ${eventId} (seuil ${MIN_GENRE_OCCURRENCE}) :`,
+            topGenreIds
+        );
     }
+
+    // 5) Enregistrer dans event_genre
+    for (const genreId of topGenreIds) {
+        await ensureRelation(
+            "event_genre",
+            { event_id: eventId, genre_id: genreId },
+            "event_genre"
+        );
+    }
+
     return topGenreIds;
 }
 
 /**
- * Pour un promoteur, déduit les genres en se basant sur l'ensemble des événements auxquels il participe.
- * Seules les occurrences d'un même genre atteignant MIN_GENRE_OCCURRENCE seront affectées au promoteur.
+ * Pour un promoteur, déduit ses genres via ses événements.
+ * Seules les occurrences atteignant MIN_GENRE_OCCURRENCE et non bannies
+ * seront affectées ; sinon, fallback sur le top 5.
  */
 async function assignPromoterGenres(promoterId) {
-    // Récupérer les événements liés au promoteur
+    // 1) Récupérer les events du promoteur
     const { data: promoterEvents, error: peError } = await supabase
         .from('event_promoter')
         .select('event_id')
         .eq('promoter_id', promoterId);
     if (peError) throw peError;
 
-    // Compter la fréquence des genres pour l'ensemble des événements du promoteur
+    // 2) Compter les genres de ces events
     const genreCounts = {};
-    for (const row of promoterEvents) {
+    for (const { event_id } of promoterEvents) {
         const { data: eventGenres, error: egError } = await supabase
             .from('event_genre')
             .select('genre_id')
-            .eq('event_id', row.event_id);
+            .eq('event_id', event_id);
         if (egError) throw egError;
-        if (eventGenres) {
-            eventGenres.forEach(g => {
-                genreCounts[g.genre_id] = (genreCounts[g.genre_id] || 0) + 1;
-            });
-        }
+        eventGenres.forEach(g => {
+            genreCounts[g.genre_id] = (genreCounts[g.genre_id] || 0) + 1;
+        });
     }
 
-    // Tri des genres par ordre décroissant et limitation aux 5 premiers
-    const topGenreIds = Object.entries(genreCounts)
-        .sort((a, b) => b[1] - a[1])
+    // 3) Premier filtre : seuil + exclusion des bannis
+    let topGenreIds = Object.entries(genreCounts)
+        .filter(([genreId, count]) =>
+            count >= MIN_GENRE_OCCURRENCE &&
+            !bannedGenreIds.includes(Number(genreId))
+        )
+        .sort(([, a], [, b]) => b - a)
         .slice(0, 5)
-        .map(entry => entry[0]);
+        .map(([genreId]) => Number(genreId));
 
-    console.log(`[Genres] Top genres IDs pour promoteur ${promoterId}: ${JSON.stringify(topGenreIds)}`);
+    // 4) Fallback plus permissif
+    if (topGenreIds.length === 0) {
+        topGenreIds = Object.entries(genreCounts)
+            .filter(([genreId]) => !bannedGenreIds.includes(Number(genreId)))
+            .sort(([, a], [, b]) => b - a)
+            .slice(0, 3)
+            .map(([genreId]) => Number(genreId));
 
-    // Création de la relation dans la table pivot pour chacun des genres retenus
-    for (const genreId of topGenreIds) {
-        await ensureRelation("promoter_genre", { promoter_id: promoterId, genre_id: genreId }, "promoter_genre");
+        console.log(
+            `[Genres] Aucun genre ≥ ${MIN_GENRE_OCCURRENCE} occurences non-banni pour promoteur ${promoterId}, ` +
+            `fallback top 3 sans seuil :`,
+            topGenreIds
+        );
+    } else {
+        console.log(
+            `[Genres] Top genres pour promoteur ${promoterId} (seuil ${MIN_GENRE_OCCURRENCE}) :`,
+            topGenreIds
+        );
     }
+
+    // 5) Enregistrer dans promoter_genre
+    for (const genreId of topGenreIds) {
+        await ensureRelation(
+            "promoter_genre",
+            { promoter_id: promoterId, genre_id: genreId },
+            "promoter_genre"
+        );
+    }
+
+    return topGenreIds;
 }
 
 // --- Existing Manage Promoters (unchanged) ---
@@ -656,76 +736,86 @@ async function findOrInsertPromoter(promoterName, eventData) {
 }
 
 // --- Manage Artists ---
-// --- Manage Artists ---
 async function findOrInsertArtist(artistObj) {
     // artistObj: { name, time, soundcloud, stage, performance_mode }
     let artistName = (artistObj.name || '').trim();
     if (!artistName) return null;
 
-    // Normalisation du nom pour enlever les caractères parasites et diacritiques
+    // 1. Normalisation du nom
     artistName = normalizeArtistNameEnhanced(artistName);
 
-    // Obtenir le token SoundCloud et chercher l'artiste sur SoundCloud
+    // 2. Recherche sur SoundCloud
     const token = await getAccessToken();
     let scArtist = null;
     if (token) {
         scArtist = await searchArtist(artistName, token);
     }
-    let artistData = null;
+
+    // 3. Construction de l'objet artistData
+    let artistData;
     if (scArtist) {
-        // extractArtistInfo retourne l'objet tel que fourni par l'API SoundCloud
+        // Si trouvé sur SC, extraire les infos enrichies
         artistData = await extractArtistInfo(scArtist);
     } else {
-        // Fallback : utiliser les données fournies par le prompt OpenAI
+        // Sinon fallback minimal
         artistData = {
             name: artistName,
-            external_links: artistObj.soundcloud ? { soundcloud: { link: artistObj.soundcloud } } : null,
+            external_links: artistObj.soundcloud
+                ? { soundcloud: { link: artistObj.soundcloud } }
+                : null,
         };
     }
 
-    // Vérification des doublons via le lien externe SoundCloud
-    if (artistData.external_links && artistData.external_links.soundcloud && artistData.external_links.soundcloud.id) {
+    // 4. Détection de doublons via lien SoundCloud
+    if (artistData.external_links?.soundcloud?.id) {
         const { data: existingByExternal, error: extError } = await supabase
             .from('artists')
-            .select('*')
+            .select('id')
             .eq('external_links->soundcloud->>id', artistData.external_links.soundcloud.id);
         if (extError) throw extError;
-        if (existingByExternal && existingByExternal.length > 0) {
-            console.log(`➡️ Artist already exists (matched by external link): "${artistName}" (id=${existingByExternal[0].id}).`);
+        if (existingByExternal.length > 0) {
+            console.log(`➡️ Artist exists by external link: "${artistName}" (id=${existingByExternal[0].id})`);
             return existingByExternal[0].id;
         }
     }
 
-    // Vérification des doublons via le nom
+    // 5. Détection de doublons via nom
     const { data: existingByName, error: nameError } = await supabase
         .from('artists')
-        .select('*')
+        .select('id')
         .ilike('name', artistName);
     if (nameError) throw nameError;
-    if (existingByName && existingByName.length > 0) {
-        console.log(`➡️ Artist already exists by name: "${artistName}" (id=${existingByName[0].id}).`);
+    if (existingByName.length > 0) {
+        console.log(`➡️ Artist exists by name: "${artistName}" (id=${existingByName[0].id})`);
         return existingByName[0].id;
     }
 
-    // Insertion du nouvel artiste
+    // 6. Insertion du nouvel artiste
     const { data: inserted, error: insertError } = await supabase
         .from('artists')
         .insert(artistData)
         .select();
     if (insertError || !inserted) throw insertError || new Error("Could not insert artist");
-    console.log(`✅ Artist inserted: name="${artistName}", id=${inserted[0].id}`);
-
     const newArtistId = inserted[0].id;
+    console.log(`✅ Artist inserted: "${artistName}" (id=${newArtistId})`);
 
-    // Traitement des genres et liaison avec l'artiste
+    // 7. Traitement des genres et liaison
     try {
         const genres = await processArtistGenres(artistData);
         for (const genreObj of genres) {
-            const genreId = await insertGenreIfNew(genreObj);
-            await linkArtistGenre(newArtistId, genreId);
+            if (genreObj.id) {
+                // ✨ Alias DnB détecté → liaison directe sur l'ID forcé (437)
+                await linkArtistGenre(newArtistId, genreObj.id);
+                console.log(`   ↳ Linked artist to forced genre_id=${genreObj.id}`);
+            } else {
+                // Workflow normal pour les autres genres
+                const genreId = await insertGenreIfNew(genreObj);
+                await linkArtistGenre(newArtistId, genreId);
+                console.log(`   ↳ Linked artist to genre_id=${genreId}`);
+            }
         }
     } catch (err) {
-        console.error("Error processing genres for artist:", artistName, err);
+        console.error("❌ Error processing genres for artist:", artistName, err);
     }
 
     return newArtistId;
