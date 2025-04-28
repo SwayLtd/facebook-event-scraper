@@ -11,9 +11,9 @@ import OpenAI from 'openai';
 // --- Global Parameters ---
 const DRY_RUN = false;            // Set true for dry-run mode (no DB writes)
 const FUZZY_THRESHOLD = 0.75;     // Similarity threshold for fuzzy matching
-const MIN_GENRE_OCCURRENCE = 2; // Minimum occurrences for genre assignment
+const MIN_GENRE_OCCURRENCE = 3; // Minimum occurrences for genre assignment
 
-const bannedGenres = ["other", "mixtape", "electronic", "belgian", "rave", "oldschool", "music", "remix", "track", "podcast", "dance", "set", "festival", "ecstacy", "uk", "live", "paris", "internet", "episode", "r", "D", "club", "dj", "mix", "radio", "soundcloud", "sesh"];
+const bannedGenres = ["90s", "Disco", "Dub", "Guaracha", "Bootleg", "Montreal", "Lebanon", "Stereo", "Berghain", "Jaw", "Not", "Monster", "Dream", "Drone", "Eurodance", "Storytelling", "Nostalgic", "Guitar", "Art", "Future", "Romania", "Drums", "Atmosphere", "Emo", "Lyrical", "Indonesia", "Mood", "Mellow", "Work", "Feminism", "Download", "This", "Poetry", "Sound", "Malibu", "Twek", "Money", "Orgasm", "Cover", "Viral", "Sexy", "Z", "Nas", "Weird", "P", "Indonesion", "Funky", "Tearout", "Uplifting", "Love", "Core", "Violin", "Simpsons", "Riddim", "World Music", "Dancehall", "Gbr", "Fußball", "German", "New", "Eargasm", "Ecstasy", "Coldwave", "Brazilian", "Beat", "Song", "Soulful", "Smooth", "Contemporary", "Ballad", "Modern", "Beyonce", "Occult", "Evil", "Vinyl", "2000's", "Dog", "Gangsta", "Hair", "Soundtrack", "Hard Drance", "Bassline", "Queer", "Interview", "Krautrock", "Soundscape", "Darkwave", "Atmospheric", "Americana", "Mpc", "Detroit", "Fast", "Argentina", "Emotional", "Germany", "Frankfurt", "Karlsruhe", "Driving", "Cosmic", "Summer", "Basement", "Beachbar", "Party", "Producer", "Alive", "Pulse", "Coding", "Offensive", "Alex", "Time", "Soho", "Spring", "Aus", "X", "Modern Dancehall", "Elektra", "Piano", "Italo", "Synth", "Ghetto", "Moombahton", "Ghetto", "Chicago", "Happy", "80s", "Munich", "Melancholic", "Samples", "Madrid", "Amapiano", "00s", "Breakbeat", "Retro", "Breakz", "Spain", "Pandora", "Tropical", "Latin Pop", "Night", "Aussie", "Australian", "Fire", "Hot", "Spotify", "Ur", "2step", "Lonely", "Sad", "Angry", "Heavy", "Hex", "A", "Complex", "Freestyle", "Mainstream", "All", "Long", "Antifa", "Horror", "Scary", "Japan", "Popular", "Memphis", "Nostalgia", "Ost", "Speech", "Shoegaze", "Orchestral", "London", "Kinky", "Tresor", "Chillout", "Cool", "Sun", "Ethnic", "Banjo", "Trippy", "Persian", "Traditional", "Persian Traditional", "Bochka", "Oh", "God", "Kids", "Compilation", "Ghost", "Space", "Christ", "Based", "De", "Juke", "Gent", "Valearic", "Ebm", "Sac-sha", "Amsterdam", "Noise", "Eclectic", "Hi-nrg", "Antwerp", "Feelgood", "Body", "Indie Dance", "Barcelona", "Fusion", "C", "Comedy", "Zephyr", "E", "Tiktok", "Brasil", "O", "It", "Us", "Yes", "Scantraxx", "Qlimax", "Style", "Italian", "Spiritual", "Quiet", "Best", "Denver", "Colorado", "Soca", "Bobo", "G", "Zouk", "Booba", "Game", "Cello", "Jam", "Hardtekk", "Break", "Goa", "Boogie", "Idm", "Haldtime", "Spanish", "Screamo", "Ra", "Jersey", "Organ", "Palestine", "Congo", "Healing", "Minecraft", "Cyberpunk", "Television", "Film", "Cursed", "Crossbreed", "Funama", "Kuduro", "Mashups", "Collaboration", "France", "Alien", "Banger", "Tool", "Insomnia", "Flow", "Kafu", "Adele", "Makina", "Manchester", "Salford", "Macedonia", "Japanese", "Relax", "Relaxing", "Relaxation", "Is", "Bdr", "Bier", "Jckson", "Jersey Club", "Big Room", "Brooklyn", "Coffee", "Green", "Tekkno", "Flips", "Sia", "Ccr", "Ai", "Unicorn", "Q", "Aversion", "Gym", "Get", "Buningman", "Rotterdam", "Matrix", "Indian", "Brazil", "S", "Hybrid", "Beats", "Singer", "Ans", "Theme", "Future Bass", "Club House", "Glam", "Aggressive", "Prog", "Technoid", "Funny", "Raggamuffin", "Bangface", "Bandcamp", "Bristol", "Organic", "Brazilian Phonk", "Revolution", "Afterlife", "Rockabilly", "Tune", "Brixton", "Psydub", "Harmony", "Montana", "Imaginarium", "Cheesy", "Choral", "other", "mixtape", "world", "venice", "hate", "bbc", "original", "hip", "Indie", "dan", "wave", "J", "deep", "holiday", "berlin", "Classic", "fun", "Electric", "Leftfield", "Italo-disco", "Electronica", "Singer-songwriter", "alternative", "sampled", "anime", "hit", "speed garage", "groovy", "donk", "latin", "R", "soul", "trash", "vocal", "alternative rock", "werewolf", "christmas", "xmas", "amen", "fox", "you", "Dl", "girl", "Intelligent", "audio", "musical", "tony", "moon", "ukf", "zombies", "Complextro", "Doom", "death", "Monstercat", "cake", "scene", "queen", "slam", "fox", "Czech", "workout", "winter", "modus", "iaginarium", "avalon", "fullon", "football", "colombia", "portugal", "badass", "recorder", "chile", "road", "breton", "sufi", "chanson", "noize", "balada", "running", "footwork", "santa", "crazy", "microwave", "bop", "great", "carnaval", "standard", "demo", "twilight", "female", "hippie", "community", "meditative", "yoga", "meditation", "drop", "haunting", "chant", "Birmingham", "opium", "combo", "austria", "old", "worldwide", "free", "rap", "d", "snap", "n", "hip-hop", "hiphip", "breaks", "electronic", "belgian", "belgium", "up", "noir", "bass", "murder", "ep", "rave", "bad", "oldschool", "music", "remix", "track", "podcast", "dance", "set", "festival", "ecstacy", "uk", "live", "paris", "internet", "episode", "r", "D", "club", "dj", "mix", "radio", "soundcloud", "sesh"];
 
 // Read environment variables
 const supabaseUrl = process.env.SUPABASE_URL;
@@ -285,62 +285,73 @@ function splitCompoundTags(tag) {
 
 
 /**
- * Nettoie une description en retirant les balises HTML et en supprimant la partie "Read more on Last.fm".
- * Si, après nettoyage, la description est trop courte (moins de 30 caractères), retourne une chaîne vide.
+ * Nettoie une description en retirant les balises HTML, la partie "Read more on Last.fm",
+ * et supprime un éventuel " ." en fin de chaîne.
+ * Si, après nettoyage, la description est trop courte (moins de 30 caractères), retourne "".
  */
 function cleanDescription(desc) {
     if (!desc) return "";
-    // Supprimer toutes les balises HTML
+    // 1. Supprimer toutes les balises HTML
     let text = desc.replace(/<[^>]*>/g, '').trim();
-    // Retirer toute occurrence de "Read more on Last.fm" (insensible à la casse)
+    // 2. Retirer "Read more on Last.fm"
     text = text.replace(/read more on last\.fm/gi, '').trim();
-    // Si le texte est trop court, on considère qu'il n'y a pas de description utile
-    if (text.length < 30) {
-        return "";
-    }
-    return text;
+    // 3. Supprimer un résidu " ." en fin de description
+    text = text.replace(/\s+\.\s*$/, '');
+    // 4. Vérifier la longueur minimale
+    return text.length < 30 ? "" : text;
 }
 
 /**
  * Vérifie via Last.fm si le tag correspond à un genre musical.
- * Extrait, si présent, l'URL du genre depuis la partie HTML du wiki.summary.
- * Retourne un objet { valid: boolean, name: string, description: string, lastfmUrl: string }.
+ * Retourne { valid, name, description, lastfmUrl }.
+ * n’autorise que si la description contient "genre" ou "sub-genre"/"subgenre"
+ * ou "<nom> music", et rejette si elle contient "umbrella term"
+ * ou si le nom est une seule lettre.
  */
 async function verifyGenreWithLastFM(tagName) {
+    // rejeter noms à une seule lettre
+    if (tagName.length === 1) {
+        return { valid: false };
+    }
+
     try {
         const url = `http://ws.audioscrobbler.com/2.0/?method=tag.getinfo&tag=${encodeURIComponent(tagName)}&api_key=${LASTFM_API_KEY}&format=json`;
         const response = await fetch(url);
         const data = await response.json();
-        // Optionnel : vous pouvez commenter ou décommenter ce log
-        // console.log(`[Genres] Last.fm API response for tag "${tagName}": ${JSON.stringify(data)}`);
-        if (data && data.tag) {
-            // Récupérer le wiki summary et nettoyer la description
-            const wikiSummary = data.tag.wiki ? data.tag.wiki.summary : "";
+        if (!data?.tag) return { valid: false };
 
-            // Extraire l'URL contenue dans la balise <a href="...">
-            let extractedUrl = "";
-            const linkMatch = wikiSummary.match(/<a href="([^"]+)">/);
-            if (linkMatch && linkMatch[1]) {
-                extractedUrl = linkMatch[1];
-            } else {
-                // Si aucun lien n'est trouvé, utiliser data.tag.url
-                extractedUrl = data.tag.url || "";
-            }
+        // Nettoyage initial et extraction du résumé
+        const rawSummary = data.tag.wiki?.summary || "";
+        const description = cleanDescription(rawSummary);
+        if (!description) return { valid: false };
 
-            // Nettoyer la description en retirant les balises HTML et la partie "Read more on Last.fm"
-            const cleanDesc = cleanDescription(wikiSummary);
+        const lowerDesc = description.toLowerCase();
+        const lowerTag = tagName.toLowerCase();
 
-            return {
-                valid: true,
-                name: data.tag.name.toLowerCase(), // conversion en minuscule pour la comparaison
-                description: cleanDesc,
-                lastfmUrl: extractedUrl
-            };
+        // Conditions d'acceptation
+        const hasGenreWord = /(genre|sub-genre|subgenre)/.test(lowerDesc);
+        const hasMusicPhrase = new RegExp(`${lowerTag}\\s+music`).test(lowerDesc);
+        const isUmbrella = /umbrella term/.test(lowerDesc);
+
+        if (isUmbrella || !(hasGenreWord || hasMusicPhrase)) {
+            return { valid: false };
         }
+
+        // Extraction de l’URL du tag
+        let lastfmUrl = data.tag.url || "";
+        const linkMatch = rawSummary.match(/<a href="([^"]+)"/);
+        if (linkMatch?.[1]) lastfmUrl = linkMatch[1];
+
+        return {
+            valid: true,
+            name: data.tag.name.toLowerCase(),
+            description,
+            lastfmUrl
+        };
     } catch (error) {
         console.error("[Genres] Error verifying genre with Last.fm for tag:", tagName, error);
+        return { valid: false };
     }
-    return { valid: false };
 }
 
 /**
@@ -692,47 +703,79 @@ async function assignPromoterGenres(promoterId) {
 }
 
 // --- Existing Manage Promoters (unchanged) ---
+/**
+ * Recherche ou insère un promoteur, puis retourne { id, name, image_url }.
+ */
 async function findOrInsertPromoter(promoterName, eventData) {
     const normalizedName = getNormalizedName(promoterName);
+
+    // 1) Exact match sur le nom
     const { data: exactMatches, error: exactError } = await supabase
         .from('promoters')
         .select('id, name, image_url')
         .eq('name', normalizedName);
     if (exactError) throw exactError;
+
     if (exactMatches && exactMatches.length > 0) {
-        console.log(`➡️ Promoter "${promoterName}" (normalized as "${normalizedName}") found by exact match (id=${exactMatches[0].id}).`);
-        return exactMatches[0].id;
+        const p = exactMatches[0];
+        console.log(`➡️ Promoter "${promoterName}" trouvé (exact) → id=${p.id}`);
+        return { id: p.id, name: p.name, image_url: p.image_url };
     }
+
+    // 2) Fuzzy match contre tous les promoteurs existants
     const { data: allPromoters, error: allError } = await supabase
         .from('promoters')
         .select('id, name, image_url');
     if (allError) throw allError;
+
     if (allPromoters && allPromoters.length > 0) {
-        const matches = stringSimilarity.findBestMatch(normalizedName.toLowerCase(), allPromoters.map(p => p.name.toLowerCase()));
-        const bestMatch = matches.bestMatch;
+        const names = allPromoters.map(p => p.name.toLowerCase());
+        const { bestMatch, bestMatchIndex } = stringSimilarity.findBestMatch(
+            normalizedName.toLowerCase(),
+            names
+        );
         if (bestMatch.rating >= FUZZY_THRESHOLD) {
-            const matchedPromoter = allPromoters[matches.bestMatchIndex];
-            console.log(`➡️ Promoter "${promoterName}" (normalized as "${normalizedName}") is similar to existing promoter "${matchedPromoter.name}" (id=${matchedPromoter.id}).`);
-            return matchedPromoter.id;
+            const p = allPromoters[bestMatchIndex];
+            console.log(
+                `➡️ Promoteur "${promoterName}" similaire à "${p.name}" → id=${p.id}`
+            );
+            return { id: p.id, name: p.name, image_url: p.image_url };
         }
     }
-    console.log(`➡️ Promoter "${promoterName}" not found by fuzzy matching. Inserting new promoter...`);
+
+    // 3) Insertion d'un nouveau promoteur
+    console.log(`➡️ Insertion d’un nouveau promoteur "${promoterName}"…`);
     const promoterSource = eventData.hosts.find(h => h.name === promoterName);
     const newPromoterData = { name: normalizedName };
-    if (promoterSource && promoterSource.id) {
-        const highResUrl = await fetchHighResImage(promoterSource.id);
-        if (highResUrl) newPromoterData.image_url = highResUrl;
+
+    // tenter de récupérer une image haute résolution via Facebook Graph
+    if (promoterSource?.id) {
+        const highRes = await fetchHighResImage(promoterSource.id);
+        if (highRes) newPromoterData.image_url = highRes;
     }
-    if (!newPromoterData.image_url && promoterSource && promoterSource.photo && promoterSource.photo.imageUri) {
+
+    // fallback sur photo.imageUri si disponible
+    if (!newPromoterData.image_url && promoterSource?.photo?.imageUri) {
         newPromoterData.image_url = promoterSource.photo.imageUri;
     }
-    const { data: newPromoter, error: insertPromoterError } = await supabase
+
+    const { data: inserted, error: insertError } = await supabase
         .from('promoters')
         .insert(newPromoterData)
-        .select();
-    if (insertPromoterError || !newPromoter) throw insertPromoterError || new Error("Promoter insertion failed");
-    console.log(`✅ New promoter inserted: "${promoterName}" (normalized as "${normalizedName}") (id=${newPromoter[0].id}).`);
-    return newPromoter[0].id;
+        .select('id, name, image_url');
+    if (insertError || !inserted || inserted.length === 0) {
+        throw insertError || new Error('Échec de l’insertion du promoteur');
+    }
+
+    const created = inserted[0];
+    console.log(
+        `✅ Promoteur inséré : "${promoterName}" → id=${created.id}`
+    );
+    return {
+        id: created.id,
+        name: created.name,
+        image_url: created.image_url ?? null
+    };
 }
 
 // --- Manage Artists ---
@@ -1006,17 +1049,25 @@ async function main() {
         }
 
         // (1) Process promoters
-        const promoterIds = [];
+        // On remplace `promoterIds` par `promoterInfos`, qui contiendra { id, name, image_url }
+        const promoterInfos = [];
+
         for (const promoterName of promotersList) {
             if (!promoterName) continue;
+
             console.log(`\n🔍 Processing promoter "${promoterName}"...`);
-            let promoterId = null;
+
+            // Valeur par défaut en DRY_RUN
+            let info = { id: null, name: promoterName, image_url: null };
+
             if (DRY_RUN) {
                 console.log(`(DRY_RUN) Would find/insert promoter: "${promoterName}"`);
             } else {
-                promoterId = await findOrInsertPromoter(promoterName, eventData);
+                // findOrInsertPromoter renvoie désormais { id, name, image_url }
+                info = await findOrInsertPromoter(promoterName, eventData);
             }
-            promoterIds.push(promoterId);
+
+            promoterInfos.push(info);
         }
 
         // (2) Process venue
@@ -1025,6 +1076,7 @@ async function main() {
             console.log(`\n🔍 Processing venue "${venueName}"...`);
             const normalizedVenueName = getNormalizedName(venueName);
             if (!DRY_RUN) {
+                // 2A) Try find by exact address
                 let { data: venuesByAddress, error: vAddrError } = await supabase
                     .from('venues')
                     .select('id, location, name')
@@ -1032,8 +1084,9 @@ async function main() {
                 if (vAddrError) throw vAddrError;
                 if (venuesByAddress && venuesByAddress.length > 0) {
                     venueId = venuesByAddress[0].id;
-                    console.log(`➡️ Venue found by address (location): "${venueAddress}" (id=${venueId}).`);
+                    console.log(`➡️ Venue found by address: "${venueAddress}" (id=${venueId}).`);
                 } else {
+                    // 2B) Try find by exact name
                     let { data: venuesByName, error: vNameError } = await supabase
                         .from('venues')
                         .select('id, name, location')
@@ -1043,44 +1096,65 @@ async function main() {
                         venueId = venuesByName[0].id;
                         console.log(`➡️ Venue "${normalizedVenueName}" found by exact name (id=${venueId}).`);
                     } else {
+                        // 2C) Try fuzzy match against all venues
                         const { data: allVenues, error: allVenuesError } = await supabase
                             .from('venues')
                             .select('id, name, location');
                         if (allVenuesError) throw allVenuesError;
-                        const match = allVenues.find(v => stringSimilarity.compareTwoStrings(v.name.toLowerCase(), normalizedVenueName.toLowerCase()) >= FUZZY_THRESHOLD);
+                        const match = allVenues.find(v =>
+                            stringSimilarity.compareTwoStrings(
+                                v.name.toLowerCase(),
+                                normalizedVenueName.toLowerCase()
+                            ) >= FUZZY_THRESHOLD
+                        );
                         if (match) {
                             venueId = match.id;
-                            console.log(`➡️ Venue "${normalizedVenueName}" is similar to existing venue "${match.name}" (id=${venueId}).`);
+                            console.log(`➡️ Venue "${normalizedVenueName}" is similar to "${match.name}" (id=${venueId}).`);
                         } else {
+                            // 2D) Insert new venue
                             console.log(`➡️ No venue found for "${normalizedVenueName}". Inserting new venue...`);
-                            const newVenueData = { name: normalizedVenueName, location: venueAddress };
+                            const newVenueData = {
+                                name: normalizedVenueName,
+                                location: venueAddress
+                            };
                             const geo = {};
                             if (venueCity) geo.locality = venueCity;
                             if (venueCountry) geo.country = venueCountry;
-                            if (Object.keys(geo).length > 0) newVenueData.geo = geo;
+                            if (Object.keys(geo).length) newVenueData.geo = geo;
                             if (venueLatitude && venueLongitude) {
                                 newVenueData.location_point = `SRID=4326;POINT(${venueLongitude} ${venueLatitude})`;
                             }
-                            const promoterSource = eventData.hosts.find(h => getNormalizedName(h.name) === normalizedVenueName);
-                            if (promoterSource && promoterSource.id) {
-                                const highResUrl = await fetchHighResImage(promoterSource.id);
-                                if (highResUrl) {
-                                    newVenueData.image_url = highResUrl;
-                                    console.log(`➡️ No image for venue, using high-res promoter image from Graph API.`);
-                                }
+
+                            // ---- COPY PROMOTER IMAGE IF NAMES MATCH ----
+                            // normalize for comparison
+                            const normVenue = normalizeArtistNameEnhanced(normalizedVenueName).toLowerCase();
+                            const matchingPromo = promoterInfos.find(p =>
+                                p.image_url &&
+                                normalizeArtistNameEnhanced(p.name).toLowerCase() === normVenue
+                            );
+                            if (matchingPromo) {
+                                newVenueData.image_url = matchingPromo.image_url;
+                                console.log(
+                                    `➡️ Copied image from promoter "${matchingPromo.name}" ` +
+                                    `to new venue "${normalizedVenueName}".`
+                                );
                             }
+                            // --------------------------------------------
+
                             const { data: newVenue, error: insertVenueError } = await supabase
                                 .from('venues')
                                 .insert(newVenueData)
-                                .select();
-                            if (insertVenueError || !newVenue) throw insertVenueError || new Error("Venue insertion failed");
+                                .select('id');
+                            if (insertVenueError || !newVenue || newVenue.length === 0) {
+                                throw insertVenueError || new Error("Venue insertion failed");
+                            }
                             venueId = newVenue[0].id;
                             console.log(`✅ New venue inserted: "${normalizedVenueName}" (id=${venueId}).`);
                         }
                     }
                 }
             } else {
-                console.log(`(DRY_RUN) Would find/insert venue: "${venueName}" / Address: "${venueAddress}"`);
+                console.log(`(DRY_RUN) Would find/insert venue "${venueName}" / Address: "${venueAddress}"`);
             }
         } else {
             console.log("\nℹ️ No venue information to insert (online event or venue not specified).");
@@ -1089,29 +1163,69 @@ async function main() {
         // (3) Process event (check if exists then insert or update)
         console.log(`\n📝 Checking if event "${eventName}" already exists in the database...`);
         let eventId = null;
+
         if (!DRY_RUN) {
+            // Recherche par URL
             const { data: eventsByUrl, error: eventsByUrlError } = await supabase
                 .from('events')
                 .select('id, metadata')
                 .ilike('metadata->>facebook_url', fbEventUrl);
             if (eventsByUrlError) throw eventsByUrlError;
+
             if (eventsByUrl && eventsByUrl.length > 0) {
                 eventId = eventsByUrl[0].id;
                 console.log(`➡️ Event found by facebook_url (id=${eventId}).`);
             } else {
+                // Recherche par titre
                 const { data: eventsByName, error: eventsByNameError } = await supabase
                     .from('events')
                     .select('id')
                     .eq('title', eventName);
                 if (eventsByNameError) throw eventsByNameError;
+
                 if (eventsByName && eventsByName.length > 0) {
                     eventId = eventsByName[0].id;
                     console.log(`➡️ Event found by title matching (id=${eventId}).`);
                 }
             }
+
             if (eventId) {
-                console.log("\n🔄 Event already exists. Updating missing relations...");
+                console.log("\n🔄 Event already exists. Checking for updates...");
+
+                // --- NOUVEAU : récupérer l'existant et comparer ---
+                const { data: existing, error: fetchErr } = await supabase
+                    .from('events')
+                    .select('description, date_time, end_date_time')
+                    .eq('id', eventId)
+                    .single();
+                if (fetchErr) throw fetchErr;
+
+                const updates = {};
+                if (existing.description !== eventDescription) {
+                    updates.description = eventDescription;
+                }
+                if (existing.date_time !== startTimeISO) {
+                    updates.date_time = startTimeISO;
+                }
+                if (existing.end_date_time !== endTimeISO) {
+                    updates.end_date_time = endTimeISO;
+                }
+
+                if (Object.keys(updates).length > 0) {
+                    const { error: updateErr } = await supabase
+                        .from('events')
+                        .update(updates)
+                        .eq('id', eventId);
+                    if (updateErr) throw updateErr;
+                    console.log(`🔄 Event (id=${eventId}) mis à jour:`, updates);
+                } else {
+                    console.log(`ℹ️ Event (id=${eventId}) déjà à jour, pas de modification nécessaire.`);
+                }
+
+                // … ici vous pouvez continuer avec les relations event_promoter, event_venue, etc.
+
             } else {
+                // Insertion d'un nouvel événement
                 console.log(`\n📝 Inserting event "${eventName}" into the events table...`);
                 const metadata = { facebook_url: fbEventUrl };
                 if (eventData.ticketUrl) {
@@ -1134,6 +1248,7 @@ async function main() {
                 eventId = newEvent[0].id;
                 console.log(`✅ Event inserted successfully (id=${eventId}).`);
             }
+
         } else {
             console.log(`(DRY_RUN) Would find/insert event "${eventName}"`);
             eventId = 999; // Example dummy ID
