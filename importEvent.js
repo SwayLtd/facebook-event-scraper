@@ -4,6 +4,7 @@ import fetch from 'node-fetch';  // Ensure node-fetch is installed
 import stringSimilarity from 'string-similarity'; // For fuzzy matching
 import { scrapeFbEvent } from 'facebook-event-scraper';
 import { createClient } from '@supabase/supabase-js';
+import NodeGeocoder from 'node-geocoder';
 
 // Imports OpenAI
 import OpenAI from 'openai';
@@ -25,6 +26,12 @@ const SOUND_CLOUD_CLIENT_ID = process.env.SOUND_CLOUD_CLIENT_ID;
 const SOUND_CLOUD_CLIENT_SECRET = process.env.SOUND_CLOUD_CLIENT_SECRET;
 const LASTFM_API_KEY = process.env.LASTFM_API_KEY;    // Pour valider les tags/genres via Last.fm
 const TOKEN_URL = 'https://api.soundcloud.com/oauth2/token';
+
+const geocoder = NodeGeocoder({
+    provider: 'openstreetmap',
+    httpAdapter: 'https',
+    formatter: null
+});
 
 // Basic checks
 if (!supabaseUrl || !serviceKey) {
@@ -1075,6 +1082,7 @@ async function main() {
         if (venueName) {
             console.log(`\n🔍 Processing venue "${venueName}"...`);
             const normalizedVenueName = getNormalizedName(venueName);
+
             if (!DRY_RUN) {
                 // 2A) Try find by exact address
                 let { data: venuesByAddress, error: vAddrError } = await supabase
@@ -1082,6 +1090,7 @@ async function main() {
                     .select('id, location, name')
                     .eq('location', venueAddress);
                 if (vAddrError) throw vAddrError;
+
                 if (venuesByAddress && venuesByAddress.length > 0) {
                     venueId = venuesByAddress[0].id;
                     console.log(`➡️ Venue found by address: "${venueAddress}" (id=${venueId}).`);
@@ -1092,6 +1101,7 @@ async function main() {
                         .select('id, name, location')
                         .eq('name', normalizedVenueName);
                     if (vNameError) throw vNameError;
+
                     if (venuesByName && venuesByName.length > 0) {
                         venueId = venuesByName[0].id;
                         console.log(`➡️ Venue "${normalizedVenueName}" found by exact name (id=${venueId}).`);
@@ -1101,6 +1111,7 @@ async function main() {
                             .from('venues')
                             .select('id, name, location');
                         if (allVenuesError) throw allVenuesError;
+
                         const match = allVenues.find(v =>
                             stringSimilarity.compareTwoStrings(
                                 v.name.toLowerCase(),
@@ -1113,20 +1124,47 @@ async function main() {
                         } else {
                             // 2D) Insert new venue
                             console.log(`➡️ No venue found for "${normalizedVenueName}". Inserting new venue...`);
+
+                            // 2D-1) Normalisation de l'adresse via Node-Geocoder
+                            let standardizedAddress = venueAddress;
+                            try {
+                                const geoResults = await geocoder.geocode(venueAddress);
+                                if (geoResults && geoResults.length > 0) {
+                                    const g = geoResults[0];
+                                    // mapping ad-hoc du pays
+                                    let country = g.country;
+                                    if (country === 'België / Belgique / Belgien') {
+                                        country = 'Belgium';
+                                    }
+                                    standardizedAddress = [
+                                        g.streetNumber,
+                                        g.streetName,
+                                        g.city,
+                                        g.zipcode,
+                                        country
+                                    ].filter(Boolean).join(', ');
+                                    console.log(`   ↳ Adresse normalisée: "${standardizedAddress}"`);
+                                } else {
+                                    console.warn(`   ⚠️ Pas de résultat géocoding pour "${venueAddress}", on garde l’original.`);
+                                }
+                            } catch (errNorm) {
+                                console.warn(`   ⚠️ Échec géocoding pour "${venueAddress}": ${errNorm.message}`);
+                            }
+                            // ─────────────────────────────────────────────────
+
+                            // 2D-2) Préparation des données
                             const newVenueData = {
                                 name: normalizedVenueName,
-                                location: venueAddress
+                                location: standardizedAddress,
+                                geo: {}
                             };
-                            const geo = {};
-                            if (venueCity) geo.locality = venueCity;
-                            if (venueCountry) geo.country = venueCountry;
-                            if (Object.keys(geo).length) newVenueData.geo = geo;
+                            if (venueCity) newVenueData.geo.locality = venueCity;
+                            if (venueCountry) newVenueData.geo.country = venueCountry;
                             if (venueLatitude && venueLongitude) {
                                 newVenueData.location_point = `SRID=4326;POINT(${venueLongitude} ${venueLatitude})`;
                             }
 
-                            // ---- COPY PROMOTER IMAGE IF NAMES MATCH ----
-                            // normalize for comparison
+                            // 2D-3) Copier l’image du promoteur si les noms correspondent
                             const normVenue = normalizeArtistNameEnhanced(normalizedVenueName).toLowerCase();
                             const matchingPromo = promoterInfos.find(p =>
                                 p.image_url &&
@@ -1139,8 +1177,8 @@ async function main() {
                                     `to new venue "${normalizedVenueName}".`
                                 );
                             }
-                            // --------------------------------------------
 
+                            // 2D-4) Insertion en base
                             const { data: newVenue, error: insertVenueError } = await supabase
                                 .from('venues')
                                 .insert(newVenueData)
@@ -1256,26 +1294,44 @@ async function main() {
 
         // (4) Create relations: event_promoter, event_venue, venue_promoter
         if (!DRY_RUN && eventId) {
+            // Utiliser promoterInfos au lieu de promoterIds
+            const promoterIds = promoterInfos.map(p => p.id).filter(id => id);
+
             if (promoterIds.length > 0) {
                 console.log("\n🔗 Ensuring event_promoter relations...");
                 for (const pid of promoterIds) {
-                    if (!pid) continue;
-                    await ensureRelation("event_promoter", { event_id: eventId, promoter_id: pid }, "event_promoter");
+                    await ensureRelation(
+                        "event_promoter",
+                        { event_id: eventId, promoter_id: pid },
+                        "event_promoter"
+                    );
                 }
             }
+
             if (venueId) {
                 console.log("\n🔗 Ensuring event_venue relation...");
-                await ensureRelation("event_venue", { event_id: eventId, venue_id: venueId }, "event_venue");
+                await ensureRelation(
+                    "event_venue",
+                    { event_id: eventId, venue_id: venueId },
+                    "event_venue"
+                );
             }
+
             if (venueId && venueName) {
-                const matchingIndexes = promotersList.reduce((indexes, name, idx) => {
-                    if (name === venueName) indexes.push(idx);
-                    return indexes;
-                }, []);
-                for (const idx of matchingIndexes) {
-                    const promoterId = promoterIds[idx];
-                    if (!promoterId) continue;
-                    await ensureRelation("venue_promoter", { venue_id: venueId, promoter_id: promoterId }, "venue_promoter");
+                console.log("\n🔗 Ensuring venue_promoter relations...");
+                // Lorsque le nom du promoteur = nom de la venue
+                for (const pInfo of promoterInfos) {
+                    if (
+                        pInfo.id &&
+                        normalizeArtistNameEnhanced(pInfo.name).toLowerCase() ===
+                        normalizeArtistNameEnhanced(venueName).toLowerCase()
+                    ) {
+                        await ensureRelation(
+                            "venue_promoter",
+                            { venue_id: venueId, promoter_id: pInfo.id },
+                            "venue_promoter"
+                        );
+                    }
                 }
             }
         }
