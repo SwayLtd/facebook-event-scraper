@@ -27,8 +27,9 @@ const VALID_ID = /^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?$/;
 /**
  * Normalise une URL ou un handle brut en { platform, link }
  * - Filtre les handles commençant par "http"
- * - Pour les URLs, supprime `search` et `hash`
+ * - Pour les URLs, supprime query et hash
  * - Ne conserve qu'un seul segment de path
+ * - Ignore spécifiquement les chemins "http" ou "https"
  * Renvoie null si invalide.
  */
 function normalize(raw) {
@@ -49,8 +50,11 @@ function normalize(raw) {
         const segments = url.pathname.split('/').filter(Boolean);
         if (segments.length !== 1) return null;
 
-        const id = segments[0];
-        if (!VALID_ID.test(id) || id.length < 2) return null;
+        const id = segments[0].toLowerCase();
+        // Filtre id trop court, invalides ou équivalent "http(s)"
+        if (!VALID_ID.test(id) || id.length < 2 || id === 'http' || id === 'https') {
+            return null;
+        }
 
         // Détermination de la plateforme
         let platform;
@@ -79,7 +83,6 @@ function normalize(raw) {
         // Reconstruction sans query ni hash, et sans slash final
         const cleanPath = `/${segments[0]}`;
         const cleanLink = `${url.protocol}//${url.hostname}${cleanPath}`;
-        // e.g. "https://instagram.com/handle"
         return { platform, link: cleanLink };
     }
 
@@ -93,8 +96,10 @@ function normalize(raw) {
     const prefixMatch = r.match(/^[A-Za-z]+(?=[:@]?)/);
     const prefix = prefixMatch ? prefixMatch[0].toLowerCase() : '';
     // On retire le préfixe pour obtenir l'ID
-    const id = r.replace(/^[A-Za-z]+[:@]?/i, '').trim();
-    if (!VALID_ID.test(id) || id.length < 2) return null;
+    const id = r.replace(/^[A-Za-z]+[:@]?/i, '').trim().toLowerCase();
+    if (!VALID_ID.test(id) || id.length < 2) {
+        return null;
+    }
 
     // Génération de l'URL selon la plateforme
     if (['instagram', 'insta', 'ig'].includes(prefix)) {
@@ -167,6 +172,18 @@ function mergeUnique(a, b) {
     return Array.from(map.values());
 }
 
+/**
+ * Déduit, pour chaque plateforme, le premier lien uniquement.
+ */
+function firstPerPlatform(socials) {
+    const seen = new Set();
+    return socials.filter(s => {
+        if (seen.has(s.platform)) return false;
+        seen.add(s.platform);
+        return true;
+    });
+}
+
 // ---------------------------
 // Main
 // ---------------------------
@@ -197,7 +214,8 @@ function mergeUnique(a, b) {
             .map(r => {
                 const jsonLinks = hasJson ? extractFromJson(r.external_links) : [];
                 const descLinks = extractFromDescription(r.description);
-                const socials = mergeUnique(jsonLinks, descLinks);
+                const merged = mergeUnique(jsonLinks, descLinks);
+                const socials = firstPerPlatform(merged);
                 return { id: r.id, name: r.name, socials };
             })
             .filter(e => e.socials.length > 0);
