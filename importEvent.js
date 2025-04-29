@@ -1,4 +1,5 @@
 import 'dotenv/config';  // Load environment variables from a .env file if present
+import path from 'path';
 import fs from 'fs';
 import fetch from 'node-fetch';  // Ensure node-fetch is installed
 import stringSimilarity from 'string-similarity'; // For fuzzy matching
@@ -67,6 +68,15 @@ try {
     console.error("Error loading geocoding_exceptions.json:", err);
 }
 
+// --- Setup logs pour le fallback Google Maps ---
+const logsDir = path.join(process.cwd(), 'logs');
+if (!fs.existsSync(logsDir)) fs.mkdirSync(logsDir, { recursive: true });
+const imageLogFile = path.join(logsDir, 'syncVenueImages.log');
+function writeImageLog(level, msg) {
+    const ts = new Date().toISOString();
+    fs.appendFileSync(imageLogFile, `${ts} [${level}] ${msg}\n`);
+}
+
 // Normalize name using exceptions file
 function getNormalizedName(originalName) {
     if (geocodingExceptions[originalName]) {
@@ -90,6 +100,40 @@ function normalizeArtistNameEnhanced(name) {
     // Supprimer les caractères non alphanumériques en début et fin de chaîne
     normalized = normalized.replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, "");
     return normalized;
+}
+
+/**
+ * Récupère l’URL d’une photo Google Places pour une adresse donnée.
+ */
+async function fetchGoogleVenuePhoto(name, address) {
+    // géocodage Google Maps
+    const geoRes = await fetch(
+        `https://maps.googleapis.com/maps/api/geocode/json?address=${encodeURIComponent(address)}&key=${process.env.GOOGLE_API_KEY}`
+    );
+    const geoJson = await geoRes.json();
+    if (!geoJson.results?.length) throw new Error('Aucun résultat geocoding');
+    const { lat, lng } = geoJson.results[0].geometry.location;
+
+    // findPlaceFromText pour obtenir place_id
+    const findRes = await fetch(
+        `https://maps.googleapis.com/maps/api/place/findplacefromtext/json` +
+        `?input=${encodeURIComponent(name + ' ' + address)}` +
+        `&inputtype=textquery&fields=place_id&key=${process.env.GOOGLE_API_KEY}`
+    );
+    const findJson = await findRes.json();
+    if (!findJson.candidates?.length) throw new Error('Aucun place_id trouvé');
+    const placeId = findJson.candidates[0].place_id;
+
+    // détails pour récupérer photo_reference
+    const detailRes = await fetch(
+        `https://maps.googleapis.com/maps/api/place/details/json` +
+        `?place_id=${placeId}&fields=photos&key=${process.env.GOOGLE_API_KEY}`
+    );
+    const detailJson = await detailRes.json();
+    const photoRef = detailJson.result.photos?.[0]?.photo_reference;
+    if (!photoRef) throw new Error('Pas de photo disponible');
+
+    return `https://maps.googleapis.com/maps/api/place/photo?maxwidth=800&photoreference=${photoRef}&key=${process.env.GOOGLE_API_KEY}`;
 }
 
 // Initialize Supabase client
@@ -1178,7 +1222,18 @@ async function main() {
                                 );
                             }
 
-                            // 2D-4) Insertion en base
+                            // 2D-4) Si toujours pas d’image, tenter Google Maps
+                            if (!newVenueData.image_url) {
+                                try {
+                                    const photoUrl = await fetchGoogleVenuePhoto(venueName, venueAddress);
+                                    newVenueData.image_url = photoUrl;
+                                    console.log(`✅ image_url obtenue via Google Maps pour "${normalizedVenueName}"`);
+                                } catch (err) {
+                                    console.warn(`⚠️ Impossible de récupérer photo Google pour id=${venueId}: ${err.message}`);
+                                }
+                            }
+
+                            // 2D-5) Insertion en base
                             const { data: newVenue, error: insertVenueError } = await supabase
                                 .from('venues')
                                 .insert(newVenueData)
@@ -1460,4 +1515,8 @@ ${eventDescription}
     }
 }
 
-main();
+// 4) Lancement
+main().catch(err => {
+    console.error("❌ Erreur non gérée:", err);
+    process.exit(1);
+});
