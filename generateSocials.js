@@ -27,7 +27,6 @@ const HANDLE_REGEX = /(?:IG:?|Insta:?|Instagram:?|Twitter:?|TW:?|X:?|x:?|FB:?|Fa
  */
 function normalize(platform, raw) {
     const r = raw.trim();
-    // if full URL
     if (/^https?:\/\//i.test(r)) {
         try {
             const hostname = new URL(r).hostname.replace(/^www\./, '');
@@ -36,7 +35,6 @@ function normalize(platform, raw) {
             return null;
         }
     }
-    // strip prefix
     const id = r.replace(/^(IG:?|ig:?|Insta:?|insta:?|Instagram:?|instagram:?|X:?|x:?|Twitter:?|twitter:?|TW:?|tw:?|FB:?|fb:?|Facebook:?|facebook:?|SC:?|sc:?|SoundCloud:?|soundcloud:?|Wiki:?|wiki:?|Wikipedia:?|wikipedia:?|BandCamp:?|bandcamp:?|BC:?|bc:?|@)/i, '').trim();
     let link;
     const p = platform.toLowerCase();
@@ -66,7 +64,6 @@ function normalize(platform, raw) {
         link = `https://en.wikipedia.org/wiki/${article}`;
         return { platform: 'wikipedia', link };
     }
-    // fallback unknown handle
     return null;
 }
 
@@ -76,12 +73,10 @@ function normalize(platform, raw) {
 function extractFromDescription(text = '') {
     const items = new Set();
     let m;
-    // URLs
     while ((m = URL_REGEX.exec(text)) !== null) {
         const norm = normalize('', m[0]);
         if (norm) items.add(JSON.stringify(norm));
     }
-    // handles
     while ((m = HANDLE_REGEX.exec(text)) !== null) {
         const raw = m[0];
         const prefix = raw.match(/^[A-Za-z]+(?=[:@]?)/i);
@@ -94,7 +89,6 @@ function extractFromDescription(text = '') {
 
 /**
  * Extract normalized social objects from external_links JSON
- * Safely handles null or undefined jsonLinks
  */
 function extractFromJson(jsonLinks) {
     const obj = jsonLinks || {};
@@ -141,12 +135,15 @@ if (!outputDir) {
         process.exit(1);
     }
 
-    const formatEntities = (rows, hasJson) => rows.map(r => {
-        const fromJson = hasJson ? extractFromJson(r.external_links) : [];
-        const fromDesc = extractFromDescription(r.description);
-        const socials = mergeUnique(fromJson, fromDesc);
-        return { id: r.id, name: r.name, socials };
-    });
+    const formatEntities = (rows, hasJson) =>
+        rows
+            .map(r => {
+                const fromJson = hasJson ? extractFromJson(r.external_links) : [];
+                const fromDesc = extractFromDescription(r.description);
+                const socials = mergeUnique(fromJson, fromDesc);
+                return { id: r.id, name: r.name, socials };
+            })
+            .filter(entity => entity.socials.length > 0);
 
     const output = {
         artists: formatEntities(artists, true),
