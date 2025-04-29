@@ -17,110 +17,166 @@ if (!SUPABASE_URL || !SUPABASE_KEY) {
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
 // ---------------------------
-// Helpers
+// Helpers & consts
 // ---------------------------
-const URL_REGEX = /https?:\/\/[\S"']+/gi;
-const HANDLE_REGEX = /(?:IG:?|Insta:?|Instagram:?|Twitter:?|TW:?|X:?|x:?|FB:?|Facebook:?|SC:?|SoundCloud:?|Wiki:?|Wikipedia:?|BandCamp:?|BC:?|@)([A-Za-z0-9._%+-]+)/gi;
+const URL_REGEX = /\bhttps?:\/\/[^\s"'<>]+/gi;
+const HANDLE_REGEX = /(?:IG:?|Insta:?|Instagram:?|Twitter:?|TW:?|X:?|x:?|FB:?|Facebook:?|SC:?|SoundCloud:?|Wiki:?|Wikipedia:?|BandCamp:?|BC:?|@)([A-Za-z0-9._-]+)/gi;
+// Un ID doit commencer et finir par [A-Za-z0-9], autoriser ., _, - à l’intérieur.
+const VALID_ID = /^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?$/;
 
 /**
- * Normalize a raw handle or URL into {platform, link}
+ * Normalise une URL ou un handle brut en { platform, link }
+ * - Filtre les handles commençant par "http"
+ * - Pour les URLs, supprime `search` et `hash`
+ * - Ne conserve qu'un seul segment de path
+ * Renvoie null si invalide.
  */
-function normalize(platform, raw) {
+function normalize(raw) {
     const r = raw.trim();
+
+    // --- Cas URL complète ---
     if (/^https?:\/\//i.test(r)) {
+        let url;
         try {
-            const hostname = new URL(r).hostname.replace(/^www\./, '');
-            return { platform: hostname, link: r };
+            url = new URL(r);
         } catch {
             return null;
         }
+
+        // Host canonique
+        const host = url.hostname.replace(/^www\./i, '').toLowerCase();
+        // Segments de chemin
+        const segments = url.pathname.split('/').filter(Boolean);
+        if (segments.length !== 1) return null;
+
+        const id = segments[0];
+        if (!VALID_ID.test(id) || id.length < 2) return null;
+
+        // Détermination de la plateforme
+        let platform;
+        switch (host) {
+            case 'instagram.com':
+                platform = 'instagram'; break;
+            case 'x.com':
+            case 'twitter.com':
+                platform = 'x'; break;
+            case 'facebook.com':
+                platform = 'facebook'; break;
+            case 'soundcloud.com':
+                platform = 'soundcloud'; break;
+            default:
+                if (host.endsWith('.bandcamp.com')) {
+                    platform = 'bandcamp';
+                    break;
+                }
+                if (host.endsWith('.wikipedia.org')) {
+                    platform = 'wikipedia';
+                    break;
+                }
+                return null;
+        }
+
+        // Reconstruction sans query ni hash, et sans slash final
+        const cleanPath = `/${segments[0]}`;
+        const cleanLink = `${url.protocol}//${url.hostname}${cleanPath}`;
+        // e.g. "https://instagram.com/handle"
+        return { platform, link: cleanLink };
     }
-    const id = r.replace(/^(IG:?|ig:?|Insta:?|insta:?|Instagram:?|instagram:?|X:?|x:?|Twitter:?|twitter:?|TW:?|tw:?|FB:?|fb:?|Facebook:?|facebook:?|SC:?|sc:?|SoundCloud:?|soundcloud:?|Wiki:?|wiki:?|Wikipedia:?|wikipedia:?|BandCamp:?|bandcamp:?|BC:?|bc:?|@)/i, '').trim();
-    let link;
-    const p = platform.toLowerCase();
-    if (['instagram', 'insta', 'ig'].includes(p)) {
-        link = `https://instagram.com/${id}`;
-        return { platform: 'instagram', link };
+
+    // --- Cas handle brut ---
+    // Empêcher qu'on capture "https" ou "http" comme handle
+    if (/^https?:/i.test(r)) {
+        return null;
     }
-    if (['twitter', 'tw', 'x'].includes(p)) {
-        link = `https://x.com/${id}`;
-        return { platform: 'x', link };
+
+    // Extraction du préfixe (IG, Twitter, @, etc.)
+    const prefixMatch = r.match(/^[A-Za-z]+(?=[:@]?)/);
+    const prefix = prefixMatch ? prefixMatch[0].toLowerCase() : '';
+    // On retire le préfixe pour obtenir l'ID
+    const id = r.replace(/^[A-Za-z]+[:@]?/i, '').trim();
+    if (!VALID_ID.test(id) || id.length < 2) return null;
+
+    // Génération de l'URL selon la plateforme
+    if (['instagram', 'insta', 'ig'].includes(prefix)) {
+        return { platform: 'instagram', link: `https://instagram.com/${id}` };
     }
-    if (['facebook', 'fb'].includes(p)) {
-        link = `https://facebook.com/${id}`;
-        return { platform: 'facebook', link };
+    if (['twitter', 'tw', 'x'].includes(prefix)) {
+        return { platform: 'x', link: `https://x.com/${id}` };
     }
-    if (['bandcamp', 'bc'].includes(p)) {
-        if (/\.bandcamp\.com/i.test(id)) link = id.startsWith('http') ? id : `https://${id}`;
-        else link = `https://${id}.bandcamp.com`;
-        return { platform: 'bandcamp', link };
+    if (['facebook', 'fb'].includes(prefix)) {
+        return { platform: 'facebook', link: `https://facebook.com/${id}` };
     }
-    if (['soundcloud', 'sc'].includes(p)) {
-        link = `https://soundcloud.com/${id}`;
-        return { platform: 'soundcloud', link };
+    if (['soundcloud', 'sc'].includes(prefix)) {
+        return { platform: 'soundcloud', link: `https://soundcloud.com/${id}` };
     }
-    if (['wikipedia', 'wiki'].includes(p)) {
+    if (['bandcamp', 'bc'].includes(prefix)) {
+        return { platform: 'bandcamp', link: `https://${id}.bandcamp.com` };
+    }
+    if (['wikipedia', 'wiki'].includes(prefix)) {
         const article = encodeURIComponent(id.replace(/\s+/g, '_'));
-        link = `https://en.wikipedia.org/wiki/${article}`;
-        return { platform: 'wikipedia', link };
+        return { platform: 'wikipedia', link: `https://en.wikipedia.org/wiki/${article}` };
     }
+
     return null;
 }
 
 /**
- * Extract normalized social objects from a description text
+ * Extrait et normalise tous les liens d’une description texte
  */
 function extractFromDescription(text = '') {
-    const items = new Set();
+    const set = new Set();
     let m;
+
+    // URLs
     while ((m = URL_REGEX.exec(text)) !== null) {
-        const norm = normalize('', m[0]);
-        if (norm) items.add(JSON.stringify(norm));
+        const norm = normalize(m[0]);
+        if (norm) set.add(JSON.stringify(norm));
     }
+
+    // Handles
     while ((m = HANDLE_REGEX.exec(text)) !== null) {
-        const raw = m[0];
-        const prefix = raw.match(/^[A-Za-z]+(?=[:@]?)/i);
-        const platform = prefix ? prefix[0] : '';
-        const norm = normalize(platform, raw);
-        if (norm) items.add(JSON.stringify(norm));
+        const norm = normalize(m[0]);
+        if (norm) set.add(JSON.stringify(norm));
     }
-    return Array.from(items).map(s => JSON.parse(s));
+
+    return Array.from(set).map(JSON.parse);
 }
 
 /**
- * Extract normalized social objects from external_links JSON
+ * Extrait et normalise depuis le JSON external_links (artists only)
  */
 function extractFromJson(jsonLinks) {
-    const obj = jsonLinks || {};
-    const items = [];
-    for (const [platform, data] of Object.entries(obj)) {
-        if (data && typeof data === 'object' && data.link) {
-            items.push({ platform: platform.toLowerCase(), link: data.link });
-        }
-    }
-    return items;
+    if (!jsonLinks || typeof jsonLinks !== 'object') return [];
+    return Object.entries(jsonLinks)
+        .map(([, data]) =>
+            data && data.link ? normalize(data.link) : null
+        )
+        .filter(x => x);
 }
 
 /**
- * Merge two lists of social objects, dedupe by link
+ * Fusionne deux tableaux de socials, dédupliqués sur la propriété link
  */
-function mergeUnique(arr1, arr2) {
+function mergeUnique(a, b) {
     const map = new Map();
-    [...arr1, ...arr2].forEach(item => {
-        if (!map.has(item.link)) map.set(item.link, item);
-    });
+    for (const item of [...a, ...b]) {
+        if (item && !map.has(item.link)) {
+            map.set(item.link, item);
+        }
+    }
     return Array.from(map.values());
 }
 
 // ---------------------------
 // Main
 // ---------------------------
-const [, , outputDir] = process.argv;
-if (!outputDir) {
-    console.error('Usage: node generateSocials.js <output-directory>');
-    process.exit(1);
-}
 (async () => {
+    const [, , outputDir] = process.argv;
+    if (!outputDir) {
+        console.error('Usage: node generateSocials.js <output-directory>');
+        process.exit(1);
+    }
+
     const [
         { data: artists, error: errA },
         { data: promoters, error: errP },
@@ -130,6 +186,7 @@ if (!outputDir) {
         supabase.from('promoters').select('id, name, description'),
         supabase.from('venues').select('id, name, description')
     ]);
+
     if (errA || errP || errV) {
         console.error('❌ Erreur Supabase:', (errA || errP || errV).message);
         process.exit(1);
@@ -138,12 +195,12 @@ if (!outputDir) {
     const formatEntities = (rows, hasJson) =>
         rows
             .map(r => {
-                const fromJson = hasJson ? extractFromJson(r.external_links) : [];
-                const fromDesc = extractFromDescription(r.description);
-                const socials = mergeUnique(fromJson, fromDesc);
+                const jsonLinks = hasJson ? extractFromJson(r.external_links) : [];
+                const descLinks = extractFromDescription(r.description);
+                const socials = mergeUnique(jsonLinks, descLinks);
                 return { id: r.id, name: r.name, socials };
             })
-            .filter(entity => entity.socials.length > 0);
+            .filter(e => e.socials.length > 0);
 
     const output = {
         artists: formatEntities(artists, true),
@@ -153,7 +210,6 @@ if (!outputDir) {
 
     const baseOut = path.join(outputDir, 'generateSocials');
     fs.mkdirSync(baseOut, { recursive: true });
-
     const jsonPath = path.join(baseOut, 'socials.json');
     fs.writeFileSync(jsonPath, JSON.stringify(output, null, 2), 'utf8');
     console.log(`✅ JSON écrit dans : ${jsonPath}`);
