@@ -1106,7 +1106,8 @@ async function main() {
         for (const promoterName of promotersList) {
             if (!promoterName) continue;
 
-            console.log(`\n🔍 Processing promoter "${promoterName}"...`);
+            console.log(`
+🔍 Processing promoter "${promoterName}"...`);
 
             // Valeur par défaut en DRY_RUN
             let info = { id: null, name: promoterName, image_url: null };
@@ -1120,6 +1121,12 @@ async function main() {
 
             promoterInfos.push(info);
         }
+
+        // Déclaration unique de promoterIds, accessible dans tout le script
+        const promoterIds = promoterInfos
+            .map(p => p.id)
+            .filter(id => id);
+
 
         // (2) Process venue
         let venueId = null;
@@ -1349,20 +1356,17 @@ async function main() {
 
         // (4) Create relations: event_promoter, event_venue, venue_promoter
         if (!DRY_RUN && eventId) {
-            // Utiliser promoterInfos au lieu de promoterIds
-            const promoterIds = promoterInfos.map(p => p.id).filter(id => id);
-
-            if (promoterIds.length > 0) {
-                console.log("\n🔗 Ensuring event_promoter relations...");
-                for (const pid of promoterIds) {
-                    await ensureRelation(
-                        "event_promoter",
-                        { event_id: eventId, promoter_id: pid },
-                        "event_promoter"
-                    );
-                }
+            // Relations event_promoter
+            console.log("\n🔗 Ensuring event_promoter relations...");
+            for (const pid of promoterIds) {
+                await ensureRelation(
+                    "event_promoter",
+                    { event_id: eventId, promoter_id: pid },
+                    "event_promoter"
+                );
             }
 
+            // Relation event_venue
             if (venueId) {
                 console.log("\n🔗 Ensuring event_venue relation...");
                 await ensureRelation(
@@ -1372,9 +1376,9 @@ async function main() {
                 );
             }
 
+            // Relations venue_promoter
             if (venueId && venueName) {
                 console.log("\n🔗 Ensuring venue_promoter relations...");
-                // Lorsque le nom du promoteur = nom de la venue
                 for (const pInfo of promoterInfos) {
                     if (
                         pInfo.id &&
