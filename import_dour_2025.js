@@ -181,22 +181,28 @@ async function searchSoundCloudArtist(artistName, accessToken) {
 
         if (response.data && response.data.length > 0) {
             logMessage(`   └─ ${response.data.length} résultat(s) trouvé(s) sur SoundCloud`);
+            // --- Nouveau scoring composite ---
             let bestMatch = null;
             let bestScore = 0;
-            for (const user of response.data) {
+            const maxFollowers = Math.max(...response.data.map(u => u.followers_count || 0), 1);
+            response.data.forEach((user, idx) => {
                 const userNorm = normalizeArtistNameEnhanced(user.username);
-                const score = stringSimilarity.compareTwoStrings(
-                    normName.toLowerCase(),
-                    userNorm.toLowerCase()
-                );
-                logMessage(`   └─ Candidat: "${user.username}" (score: ${score.toFixed(2)})`);
+                const nameScore = stringSimilarity.compareTwoStrings(normName.toLowerCase(), userNorm.toLowerCase());
+                // Followers: log pour écraser les extrêmes, normalisé [0,1]
+                const followers = user.followers_count || 0;
+                const followersScore = Math.log10(followers + 1) / Math.log10(maxFollowers + 1);
+                // Bonus pour le premier résultat
+                const positionScore = 1 - (idx / response.data.length); // 1 pour le 1er, 0.9 pour le 2e, etc.
+                // Pondération : nom 60%, followers 30%, position 10%
+                const score = (nameScore * 0.6) + (followersScore * 0.3) + (positionScore * 0.1);
+                logMessage(`   └─ Candidat: "${user.username}" | nom: ${nameScore.toFixed(2)} | followers: ${followers} | scoreFollowers: ${followersScore.toFixed(2)} | pos: ${idx+1} | score: ${score.toFixed(3)}`);
                 if (score > bestScore) {
                     bestScore = score;
                     bestMatch = user;
                 }
-            }
-            if (bestScore > 0.6) {
-                logMessage(`✅ Meilleure correspondance SoundCloud pour "${artistName}": ${bestMatch.username} (score: ${bestScore.toFixed(2)})`);
+            });
+            if (bestMatch && bestScore > 0.6) {
+                logMessage(`✅ Meilleure correspondance SoundCloud pour "${artistName}": ${bestMatch.username} (score: ${bestScore.toFixed(3)})`);
                 logMessage(`   └─ Profile SoundCloud: ${bestMatch.permalink_url}`);
                 const bestImageUrl = await getBestImageUrl(bestMatch.avatar_url);
                 return {
@@ -207,7 +213,7 @@ async function searchSoundCloudArtist(artistName, accessToken) {
                     description: bestMatch.description,
                 };
             } else {
-                logMessage(`⚠️ Aucune correspondance suffisante trouvée pour "${artistName}" (meilleur score: ${bestScore.toFixed(2)})`);
+                logMessage(`⚠️ Aucune correspondance suffisante trouvée pour "${artistName}" (meilleur score: ${bestScore.toFixed(3)})`);
             }
         } else {
             logMessage(`   └─ Aucun résultat sur SoundCloud pour "${normName}"`);
