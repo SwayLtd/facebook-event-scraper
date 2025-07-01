@@ -13,10 +13,4 @@ events_url*.txt
 /events_url/
 /output*
 .vscode/
-imports/test-dour.json
-imports/true_dour2025.json
-imports/dour_day1_2025.json
-imports/dour_day2_2025.json
-imports/dour_day3_2025.json
-imports/dour_day4_2025.json
-imports/dour_day5_2025.json
+imports/*
