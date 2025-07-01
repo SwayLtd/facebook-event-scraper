@@ -12,3 +12,6 @@ artists.json
 events_url*.txt
 /events_url/
 /output*
+.vscode/
+imports/test-dour.json
+imports/true_dour2025.json
