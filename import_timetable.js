@@ -1,3 +1,4 @@
+import { DateTime } from 'luxon';
 // --- Normalisation avancée du nom d'artiste (copié de importEvent.js) ---
 function normalizeArtistNameEnhanced(name) {
     if (!name) return name;
@@ -25,16 +26,16 @@ async function getBestImageUrl(avatarUrl) {
     }
 }
 /**
- * import_dour_2025.js
+ * import_event.js
  *
- * Script spécialement conçu pour importer les artistes du festival Dour 2025
+ * Script générique pour importer les artistes d'un festival
  * depuis le JSON formatté et les lier à SoundCloud
  *
  * Usage:
- *   node import_dour_2025.js path/to/true_dour2025.json
+ *   node import_event.js --event-url=https://www.facebook.com/events/xxx/ --json=mon_event.json
  *
  * Ce script :
- * 1. Lit le JSON des artistes du festival Dour 2025
+ * 1. Lit le JSON des artistes du festival
  * 2. Recherche chaque artiste sur SoundCloud
  * 3. Importe les données dans Supabase
  * 4. Crée l'événement Facebook et lie les artistes
@@ -66,18 +67,6 @@ const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
 const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
 
-// Festival Dour 2025 Event Info
-const DOUR_EVENT_INFO = {
-    facebook_url: 'https://www.facebook.com/events/471964535551297',
-    event_id: '471964535551297',
-    name: 'Dour Festival 2025',
-    description: 'Festival de musique électronique et alternative à Dour, Belgique',
-    start_time: '2025-07-17T12:00:00.000Z', // À ajuster selon les vraies dates
-    end_time: '2025-07-20T06:00:00.000Z',   // À ajuster selon les vraies dates
-    location: 'Dour, Belgium',
-    venue_name: 'Dour Festival Site'
-};
-
 // --- Logging Setup ---
 const logsDir = path.join(__dirname, 'logs');
 if (!fs.existsSync(logsDir)) {
@@ -88,7 +77,7 @@ function getTimestampedLogFilePath() {
     const now = new Date();
     const pad = (n) => n.toString().padStart(2, '0');
     const timestamp = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}_${pad(now.getHours())}-${pad(now.getMinutes())}-${pad(now.getSeconds())}`;
-    return path.join(logsDir, `dour_2025_${timestamp}.log`);
+    return path.join(logsDir, `import_event_${timestamp}.log`);
 }
 const logFilePath = getTimestampedLogFilePath();
 
@@ -301,69 +290,24 @@ async function insertOrUpdateArtist(artistData, soundCloudData = null) {
     }
 }
 
-/**
- * Finds the existing Dour 2025 event in the database using multiple search strategies
- * Based on the schema used in importEvent.js
- */
-async function findExistingEvent() {
+// --- Recherche d'event générique ---
+async function findExistingEvent(eventUrl) {
     try {
-        logMessage("Searching for existing Dour 2025 event in database...");
-
-        // Strategy 1: Search by Facebook URL in metadata (JSONB)
-        logMessage(`Searching by Facebook URL in metadata: ${DOUR_EVENT_INFO.facebook_url}`);
+        logMessage(`Recherche de l'event dans la base via Facebook URL: ${eventUrl}`);
         const { data: eventsByMetaUrl, error: metaUrlError } = await supabase
             .from('events')
             .select('id, title, metadata, date_time')
-            .ilike('metadata->>facebook_url', DOUR_EVENT_INFO.facebook_url);
+            .ilike('metadata->>facebook_url', eventUrl);
         if (metaUrlError) throw metaUrlError;
         if (eventsByMetaUrl && eventsByMetaUrl.length > 0) {
             const event = eventsByMetaUrl[0];
-            logMessage(`✅ Event found by Facebook URL in metadata: "${event.title}" (ID: ${event.id})`);
+            logMessage(`✅ Event trouvé: "${event.title}" (ID: ${event.id})`);
             return event;
         }
-
-        // Strategy 2: Search by event title
-        logMessage(`Searching by title: ${DOUR_EVENT_INFO.name}`);
-        const { data: eventsByTitle, error: titleError } = await supabase
-            .from('events')
-            .select('id, title, metadata, date_time')
-            .ilike('title', `%${DOUR_EVENT_INFO.name}%`);
-        if (titleError) throw titleError;
-        if (eventsByTitle && eventsByTitle.length > 0) {
-            const event = eventsByTitle[0];
-            logMessage(`✅ Event found by title: "${event.title}" (ID: ${event.id})`);
-            return event;
-        }
-
-        // Strategy 3: Search for "Dour" in event titles (more flexible)
-        logMessage("Searching for 'Dour' in event titles...");
-        const { data: eventsByDour, error: dourError } = await supabase
-            .from('events')
-            .select('id, title, metadata, date_time')
-            .ilike('title', '%Dour%');
-        if (dourError) throw dourError;
-        if (eventsByDour && eventsByDour.length > 0) {
-            // If multiple events, try to find the 2025 one
-            const dour2025 = eventsByDour.find(e =>
-                e.title.includes('2025') ||
-                (e.date_time && e.date_time.includes('2025'))
-            );
-            if (dour2025) {
-                logMessage(`✅ Event found by 'Dour' + '2025': "${dour2025.title}" (ID: ${dour2025.id})`);
-                return dour2025;
-            } else {
-                // Take the first Dour event found
-                const event = eventsByDour[0];
-                logMessage(`✅ Event found by 'Dour' (general): "${event.title}" (ID: ${event.id})`);
-                return event;
-            }
-        }
-
-        // No event found
-        logMessage("❌ No existing Dour event found in database");
-        throw new Error("No existing Dour Festival event found. Please make sure the event exists in the database before running this import.");
+        logMessage("❌ Aucun event trouvé avec cette URL Facebook dans la base");
+        throw new Error("Event non trouvé dans la base. Crée-le d'abord !");
     } catch (error) {
-        logMessage(`Error searching for existing event: ${error.message}`);
+        logMessage(`Erreur recherche event: ${error.message}`);
         throw error;
     }
 }
@@ -537,30 +481,49 @@ async function linkArtistToEvent(eventId, artistIds, performanceData) {
     }
 }
 
+import { DateTime } from 'luxon';
 // ...existing code...
 
-// Remplacement de la fonction processDourArtists
-let processDourArtists = undefined;
-const oldProcessDourArtists = processDourArtists;
+// --- Gestion des arguments CLI ---
+import process from 'node:process';
+
+function parseArgs() {
+    const args = process.argv.slice(2);
+    const result = {};
+    for (let i = 0; i < args.length; i++) {
+        if (args[i].startsWith('--event-url=')) {
+            result.eventUrl = args[i].split('=')[1];
+        } else if (args[i].startsWith('--json=')) {
+            result.jsonFilePath = args[i].split('=')[1];
+        } else if (args[i] === '--event-url' && args[i+1]) {
+            result.eventUrl = args[i+1]; i++;
+        } else if (args[i] === '--json' && args[i+1]) {
+            result.jsonFilePath = args[i+1]; i++;
+        }
+    }
+    return result;
+}
+
+async function main() {
+    const { eventUrl, jsonFilePath } = parseArgs();
+    if (!eventUrl || !jsonFilePath) {
+        console.error('Usage: node import_dour_2025.js --event-url=<facebook_event_url> --json=<path_to_json>');
+        process.exit(1);
+    }
+    // Définir le fuseau horaire par défaut
+    const timezone = 'Europe/Brussels';
     try {
-        logMessage(`=== Starting Dour 2025 Artists Import${DRY_RUN ? ' (DRY_RUN MODE)' : ''} ===`);
+        logMessage(`=== Starting Event Import${DRY_RUN ? ' (DRY_RUN MODE)' : ''} ===`);
         if (!fs.existsSync(jsonFilePath)) {
             throw new Error(`JSON file not found: ${jsonFilePath}`);
         }
-        // Gestion du fuseau horaire en paramètre CLI
-        let timezone = 'Europe/Brussels';
-        const tzArg = process.argv.find(arg => arg.startsWith('--timezone='));
-        if (tzArg) {
-            timezone = tzArg.split('=')[1];
-            logMessage(`[INFO] Fuseau horaire utilisé pour l'import : ${timezone}`);
-        } else {
-            logMessage(`[INFO] Fuseau horaire par défaut utilisé pour l'import : Europe/Brussels`);
-        }
+        logMessage(`[INFO] Fuseau horaire utilisé pour l'import : ${timezone}`);
         const jsonData = JSON.parse(fs.readFileSync(jsonFilePath, 'utf8'));
         logMessage(`Loaded ${jsonData.length} artist performances from JSON`);
         const accessToken = await getAccessToken();
-        logMessage("Finding existing Dour 2025 event...");
-        const event = await findExistingEvent();
+        logMessage("Recherche de l'event dans la base...");
+        // Patch: passer eventUrl à findExistingEvent
+        const event = await findExistingEvent(eventUrl);
         // --- Enrichir metadata event ---
         const { stages, festival_days } = extractStagesAndDaysFromPerformances(jsonData, timezone);
         await updateEventMetadata(event, stages, festival_days);
@@ -699,17 +662,22 @@ const oldProcessDourArtists = processDourArtists;
         throw error;
     }
 }
-// ...fin patch...
 
 // --- Appel auto si exécuté en CLI ---
 if (process.argv[1] && process.argv[1].replace(/\\/g, '/').endsWith('import_dour_2025.js')) {
-    console.log('[DEBUG] Script démarré, appel processDourArtists');
+    main();
+}
+// ...fin patch...
+
+// --- Appel auto si exécuté en CLI ---
+if (process.argv[1] && process.argv[1].replace(/\\/g, '/').endsWith('import_event_timetable.js')) {
+    console.log('[DEBUG] Script démarré, appel processEventArtists');
     const jsonFilePath = process.argv[2];
     if (!jsonFilePath) {
-        console.error('Usage: node import_dour_2025.js path/to/artists.json');
+        console.error('Usage: node import_event_timetable.js path/to/artists.json');
         process.exit(1);
     }
-    processDourArtists(jsonFilePath).catch(err => {
+    processEventArtists(jsonFilePath).catch(err => {
         console.error('Erreur lors de l\'import:', err);
         process.exit(2);
     });
