@@ -195,7 +195,7 @@ async function searchSoundCloudArtist(artistName, accessToken) {
                 const positionScore = 1 - (idx / response.data.length); // 1 pour le 1er, 0.9 pour le 2e, etc.
                 // Pondération : nom 60%, followers 30%, position 10%
                 const score = (nameScore * 0.6) + (followersScore * 0.3) + (positionScore * 0.1);
-                logMessage(`   └─ Candidat: "${user.username}" | nom: ${nameScore.toFixed(2)} | followers: ${followers} | scoreFollowers: ${followersScore.toFixed(2)} | pos: ${idx+1} | score: ${score.toFixed(3)}`);
+                logMessage(`   └─ Candidat: "${user.username}" | nom: ${nameScore.toFixed(2)} | followers: ${followers} | scoreFollowers: ${followersScore.toFixed(2)} | pos: ${idx + 1} | score: ${score.toFixed(3)}`);
                 if (score > bestScore) {
                     bestScore = score;
                     bestMatch = user;
@@ -367,106 +367,6 @@ async function findExistingEvent() {
         throw error;
     }
 }
-
-/**
- * Links an artist to an event with performance details
- */
-/*async function linkArtistToEvent(eventId, artistId, performanceData) {
-    try {
-        if (DRY_RUN) {
-            logMessage(`[DRY_RUN] Aurait lié l'artiste ${artistId} à l'event ${eventId} (stage: ${performanceData.stage}, time: ${performanceData.time}, end_time: ${performanceData.end_time})`);
-            return { id: `dryrun_link_${artistId}_${eventId}` };
-        }
-        const artistIdStr = String(artistId);
-        
-        // Convert time format to match database expectations
-        let startTime = null;
-        let endTime = null;
-        
-        if (performanceData.time && performanceData.time.trim() !== "") {
-            // Assume date is 2025-07-17 based on typical Dour dates (adjust as needed)
-            startTime = `2025-07-17T${performanceData.time}:00`;
-        }
-        
-        if (performanceData.end_time && performanceData.end_time.trim() !== "") {
-            // Handle midnight crossover for end times
-            let endDate = "2025-07-17";
-            const endHour = parseInt(performanceData.end_time.split(':')[0]);
-            if (endHour < 12) { // Assume times < 12 are next day
-                endDate = "2025-07-18";
-            }
-            endTime = `${endDate}T${performanceData.end_time}:00`;
-        }
-
-        // Check if link already exists with the same details
-        let query = supabase
-            .from('event_artist')
-            .select('id')
-            .eq('event_id', eventId);
-            
-        // Handle stage comparison (null vs null)
-        if (performanceData.stage === null || performanceData.stage === "") {
-            query = query.is('stage', null);
-        } else {
-            query = query.eq('stage', performanceData.stage);
-        }
-        
-        // Handle start_time comparison
-        if (startTime === null) {
-            query = query.is('start_time', null);
-        } else {
-            query = query.eq('start_time', startTime);
-        }
-        
-        // Handle end_time comparison
-        if (endTime === null) {
-            query = query.is('end_time', null);
-        } else {
-            query = query.eq('end_time', endTime);
-        }
-        
-        // Check if artist_id array contains our artist
-        query = query.contains('artist_id', [artistIdStr]);
-
-        const { data: existing, error: fetchError } = await query;
-        
-        if (fetchError) {
-            throw fetchError;
-        }
-
-        if (existing && existing.length > 0) {
-            logMessage(`➡️ Artist-event link already exists for artist_id=${artistIdStr} with same performance details`);
-            return existing[0];
-        }
-
-        // Create new link with format compatible with existing system
-        const linkRecord = {
-            event_id: eventId,
-            artist_id: [artistIdStr], // Array format as used in existing system
-            start_time: startTime,
-            end_time: endTime,
-            status: 'confirmed',
-            stage: performanceData.stage || null,
-            custom_name: null,
-            created_at: new Date().toISOString(),
-            // ... pas de updated_at ...
-        };
-
-        const { data, error } = await supabase
-            .from('event_artist')
-            .insert(linkRecord)
-            .select()
-            .single();
-
-        if (error) throw error;
-        logMessage(`✅ Created artist-event link for artist_id=${artistIdStr} (ID: ${data.id})`);
-        return data;
-        
-    } catch (error) {
-        logMessage(`Error linking artist to event: ${error.message}`);
-        throw error;
-    }
-}*/
 
 // --- Extract stages and festival days from performances ---
 function extractStagesAndDaysFromPerformances(performances) {
