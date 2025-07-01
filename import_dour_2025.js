@@ -368,8 +368,8 @@ async function findExistingEvent() {
     }
 }
 
-// --- Extract stages and festival days from performances ---
-function extractStagesAndDaysFromPerformances(performances) {
+import { toUtcIso } from './date_utils.js';
+function extractStagesAndDaysFromPerformances(performances, timezone = 'Europe/Brussels') {
     // Extract unique stages
     const stagesSet = new Set();
     performances.forEach(p => {
@@ -379,18 +379,48 @@ function extractStagesAndDaysFromPerformances(performances) {
     });
     const stages = Array.from(stagesSet).map(name => ({ name }));
 
-    // Guess festival days (assume 5 days, noon to 6am next day)
-    // If you have real dates, adapt here
-    const baseDate = new Date("2025-07-17T12:00:00");
+    // Détection automatique des jours effectifs avec gestion du fuseau horaire
+    function parseInZone(dateStr) {
+        return DateTime.fromISO(dateStr, { zone: timezone });
+    }
+    const slots = performances
+        .filter(p => p.time && p.end_time)
+        .map(p => ({
+            start: parseInZone(p.time),
+            end: parseInZone(p.end_time),
+            raw: p
+        }))
+        .sort((a, b) => a.start - b.start);
     const festival_days = [];
-    for (let i = 0; i < 5; i++) {
-        const start = new Date(baseDate.getTime() + i * 24 * 60 * 60 * 1000);
-        const end = new Date(start.getTime() + 18 * 60 * 60 * 1000); // +18h (noon to 6am)
-        festival_days.push({
-            name: `Day ${i + 1}`,
-            start: start.toISOString().slice(0, 16),
-            end: end.toISOString().slice(0, 16)
-        });
+    if (slots.length > 0) {
+        let currentDay = [];
+        let lastEnd = null;
+        let dayIdx = 1;
+        const MAX_GAP_HOURS = 4;
+        for (let i = 0; i < slots.length; i++) {
+            const slot = slots[i];
+            if (lastEnd) {
+                const gap = slot.start.diff(lastEnd, 'hours').hours;
+                if (gap > MAX_GAP_HOURS) {
+                    festival_days.push({
+                        name: `Day ${dayIdx}`,
+                        start: currentDay[0].start.toUTC().toISO({ suppressSeconds: true, suppressMilliseconds: true }),
+                        end: currentDay[currentDay.length - 1].end.toUTC().toISO({ suppressSeconds: true, suppressMilliseconds: true })
+                    });
+                    dayIdx++;
+                    currentDay = [];
+                }
+            }
+            currentDay.push(slot);
+            lastEnd = slot.end;
+        }
+        if (currentDay.length > 0) {
+            festival_days.push({
+                name: `Day ${dayIdx}`,
+                start: currentDay[0].start.toUTC().toISO({ suppressSeconds: true, suppressMilliseconds: true }),
+                end: currentDay[currentDay.length - 1].end.toUTC().toISO({ suppressSeconds: true, suppressMilliseconds: true })
+            });
+        }
     }
     return { stages, festival_days };
 }
@@ -444,17 +474,14 @@ async function linkArtistToEvent(eventId, artistIds, performanceData) {
             return { id: `dryrun_link_${artistIds.join('_')}_${eventId}` };
         }
         const artistIdStrs = artistIds.map(String);
-        // Convert time format to match database expectations
+        // Use ISO 8601 date-times directly from JSON (already formatted)
         let startTime = null;
         let endTime = null;
         if (performanceData.time && performanceData.time.trim() !== "") {
-            startTime = `2025-07-17T${performanceData.time}:00`;
+            startTime = performanceData.time;
         }
         if (performanceData.end_time && performanceData.end_time.trim() !== "") {
-            let endDate = "2025-07-17";
-            const endHour = parseInt(performanceData.end_time.split(':')[0]);
-            if (endHour < 12) { endDate = "2025-07-18"; }
-            endTime = `${endDate}T${performanceData.end_time}:00`;
+            endTime = performanceData.end_time;
         }
         // Check if link already exists with the same details
         let query = supabase
@@ -515,11 +542,19 @@ async function linkArtistToEvent(eventId, artistIds, performanceData) {
 // Remplacement de la fonction processDourArtists
 let processDourArtists = undefined;
 const oldProcessDourArtists = processDourArtists;
-processDourArtists = async function processDourArtists(jsonFilePath) {
     try {
         logMessage(`=== Starting Dour 2025 Artists Import${DRY_RUN ? ' (DRY_RUN MODE)' : ''} ===`);
         if (!fs.existsSync(jsonFilePath)) {
             throw new Error(`JSON file not found: ${jsonFilePath}`);
+        }
+        // Gestion du fuseau horaire en paramètre CLI
+        let timezone = 'Europe/Brussels';
+        const tzArg = process.argv.find(arg => arg.startsWith('--timezone='));
+        if (tzArg) {
+            timezone = tzArg.split('=')[1];
+            logMessage(`[INFO] Fuseau horaire utilisé pour l'import : ${timezone}`);
+        } else {
+            logMessage(`[INFO] Fuseau horaire par défaut utilisé pour l'import : Europe/Brussels`);
         }
         const jsonData = JSON.parse(fs.readFileSync(jsonFilePath, 'utf8'));
         logMessage(`Loaded ${jsonData.length} artist performances from JSON`);
@@ -527,7 +562,7 @@ processDourArtists = async function processDourArtists(jsonFilePath) {
         logMessage("Finding existing Dour 2025 event...");
         const event = await findExistingEvent();
         // --- Enrichir metadata event ---
-        const { stages, festival_days } = extractStagesAndDaysFromPerformances(jsonData);
+        const { stages, festival_days } = extractStagesAndDaysFromPerformances(jsonData, timezone);
         await updateEventMetadata(event, stages, festival_days);
         // --- Statistiques avancées ---
         const uniqueArtists = new Set();
@@ -561,6 +596,13 @@ processDourArtists = async function processDourArtists(jsonFilePath) {
             const artistIds = [];
             const artistNames = [];
             for (const perf of group) {
+                // Conversion des dates en UTC pour la base
+                if (perf.time) {
+                    perf.time = toUtcIso(perf.time, timezone);
+                }
+                if (perf.end_time) {
+                    perf.end_time = toUtcIso(perf.end_time, timezone);
+                }
                 const artistName = perf.name.trim();
                 artistNames.push(artistName);
                 if (!artistNameToId[artistName]) {
