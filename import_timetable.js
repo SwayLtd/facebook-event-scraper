@@ -26,13 +26,13 @@ async function getBestImageUrl(avatarUrl) {
     }
 }
 /**
- * import_event.js
+ * import_timetable.js
  *
  * Script générique pour importer les artistes d'un festival
  * depuis le JSON formatté et les lier à SoundCloud
  *
  * Usage:
- *   node import_event.js --event-url=https://www.facebook.com/events/xxx/ --json=mon_event.json
+ *   node import_timetable.js --event-url=https://www.facebook.com/events/xxx/ --json=mon_event.json
  *
  * Ce script :
  * 1. Lit le JSON des artistes du festival
@@ -77,7 +77,7 @@ function getTimestampedLogFilePath() {
     const now = new Date();
     const pad = (n) => n.toString().padStart(2, '0');
     const timestamp = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}_${pad(now.getHours())}-${pad(now.getMinutes())}-${pad(now.getSeconds())}`;
-    return path.join(logsDir, `import_event_${timestamp}.log`);
+    return path.join(logsDir, `import_timetable_${timestamp}.log`);
 }
 const logFilePath = getTimestampedLogFilePath();
 
@@ -463,7 +463,7 @@ async function linkArtistToEvent(eventId, artistIds, performanceData) {
             end_time: endTime,
             status: 'confirmed',
             stage: performanceData.stage || null,
-            custom_name: null,
+            custom_name: performanceData.custom_name || null,
             created_at: new Date().toISOString(),
             // ... pas de updated_at ...
         };
@@ -481,9 +481,6 @@ async function linkArtistToEvent(eventId, artistIds, performanceData) {
     }
 }
 
-import { DateTime } from 'luxon';
-// ...existing code...
-
 // --- Gestion des arguments CLI ---
 import process from 'node:process';
 
@@ -495,10 +492,10 @@ function parseArgs() {
             result.eventUrl = args[i].split('=')[1];
         } else if (args[i].startsWith('--json=')) {
             result.jsonFilePath = args[i].split('=')[1];
-        } else if (args[i] === '--event-url' && args[i+1]) {
-            result.eventUrl = args[i+1]; i++;
-        } else if (args[i] === '--json' && args[i+1]) {
-            result.jsonFilePath = args[i+1]; i++;
+        } else if (args[i] === '--event-url' && args[i + 1]) {
+            result.eventUrl = args[i + 1]; i++;
+        } else if (args[i] === '--json' && args[i + 1]) {
+            result.jsonFilePath = args[i + 1]; i++;
         }
     }
     return result;
@@ -669,16 +666,7 @@ if (process.argv[1] && process.argv[1].replace(/\\/g, '/').endsWith('import_dour
 }
 // ...fin patch...
 
-// --- Appel auto si exécuté en CLI ---
-if (process.argv[1] && process.argv[1].replace(/\\/g, '/').endsWith('import_event_timetable.js')) {
-    console.log('[DEBUG] Script démarré, appel processEventArtists');
-    const jsonFilePath = process.argv[2];
-    if (!jsonFilePath) {
-        console.error('Usage: node import_event_timetable.js path/to/artists.json');
-        process.exit(1);
-    }
-    processEventArtists(jsonFilePath).catch(err => {
-        console.error('Erreur lors de l\'import:', err);
-        process.exit(2);
-    });
+// --- Appel auto à main() si exécuté directement ---
+if (process.argv[1] && process.argv[1].endsWith('import_timetable.js')) {
+    main();
 }
