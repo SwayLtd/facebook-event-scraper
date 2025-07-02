@@ -96,23 +96,43 @@ def group_events(events):
     for ev in events:
         key = (ev["start"], ev["end"], ev["stage"])
         grouped[key].append(ev["name"])
+
+    # Define all separators for B2B, x, vs, etc.
+    # Regex: split on any case-insensitive B2B, B3B, F2F, VS, X, with any number of spaces around, non-capturing group
+    split_regex = re.compile(r"\s*(?:B2B|B3B|F2F|VS|X|x|vs)\s*", re.IGNORECASE)
+
     merged = []
     for (start, end, stage), names in grouped.items():
-        if len(names) > 1:
-            combined_name = " B2B ".join(names)
-            mode = "B2B"
-        else:
-            combined_name = names[0]
-            mode = detect_mode(combined_name)
-        merged.append(
-            {
-                "name": clean_name(combined_name),
-                "time": parse_datetime(start),
-                "end_time": parse_datetime(end),
-                "stage": stage,
-                "performance_mode": mode,
-            }
-        )
+        # Pour chaque nom dans le slot, splitter systématiquement sur les séparateurs
+        for combined_name in names:
+            # Exception: do not split if the name is exactly 'B2B2B2B2B'
+            if combined_name.strip().lower() == 'b2b2b2b2b':
+                split_artists = [clean_name(combined_name)]
+            else:
+                # Add ' & ' as a split separator
+                split_regex = re.compile(r"\s*(?:B2B|B3B|F2F|VS|X|x|vs| & )\s*", re.IGNORECASE)
+                split_artists = [clean_name(n) for n in split_regex.split(combined_name) if clean_name(n)]
+            # DEBUG: print the split result for each name
+            print(f"DEBUG SPLIT: '{combined_name}' -> {split_artists}")
+            if len(split_artists) > 1:
+                for n in split_artists:
+                    merged.append({
+                        "name": n,
+                        "time": parse_datetime(start),
+                        "end_time": parse_datetime(end),
+                        "stage": stage,
+                        "performance_mode": "B2B",
+                        "custom_name": clean_name(combined_name),
+                    })
+            else:
+                mode = detect_mode(combined_name)
+                merged.append({
+                    "name": clean_name(combined_name),
+                    "time": parse_datetime(start),
+                    "end_time": parse_datetime(end),
+                    "stage": stage,
+                    "performance_mode": mode,
+                })
     return merged
 
 
@@ -123,17 +143,18 @@ def to_json(entries, output_path=None):
     """
     output_list = []
     for e in entries:
-        output_list.append(
-            {
-                "artist_id": [],
-                "name": e["name"],
-                "time": e["time"],
-                "end_time": e["end_time"],
-                "soundcloud": "",
-                "stage": e["stage"],
-                "performance_mode": e["performance_mode"],
-            }
-        )
+        entry = {
+            "artist_id": [],
+            "name": e["name"],
+            "time": e["time"],
+            "end_time": e["end_time"],
+            "soundcloud": "",
+            "stage": e["stage"],
+            "performance_mode": e["performance_mode"],
+        }
+        if "custom_name" in e:
+            entry["custom_name"] = e["custom_name"]
+        output_list.append(entry)
     json_data = json.dumps(output_list, indent=2, ensure_ascii=False)
     if output_path:
         with open(output_path, "w", encoding="utf-8") as f:
