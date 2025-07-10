@@ -97,42 +97,49 @@ def group_events(events):
         key = (ev["start"], ev["end"], ev["stage"])
         grouped[key].append(ev["name"])
 
-    # Define all separators for B2B, x, vs, etc.
-    # Regex: split on any case-insensitive B2B, B3B, F2F, VS, X, with any number of spaces around, non-capturing group
-    split_regex = re.compile(r"\s*(?:B2B|B3B|F2F|VS|X|x|vs)\s*", re.IGNORECASE)
+    # Define all separators for B2B, x, vs, etc. (must have spaces around)
+    # Regex: split on any case-insensitive ' B2B ', ' B3B ', ' F2F ', ' VS ', ' x ', ' vs ', ' & ' (with spaces)
+    split_regex = re.compile(r"\s+(?:B2B|B3B|F2F|VS|x|vs|&)\s+", re.IGNORECASE)
 
     merged = []
     for (start, end, stage), names in grouped.items():
         # Pour chaque nom dans le slot, splitter systématiquement sur les séparateurs
         for combined_name in names:
             # Exception: do not split if the name is exactly 'B2B2B2B2B'
-            if combined_name.strip().lower() == 'b2b2b2b2b':
+            if combined_name.strip().lower() == "b2b2b2b2b":
                 split_artists = [clean_name(combined_name)]
             else:
-                # Add ' & ' as a split separator
-                split_regex = re.compile(r"\s*(?:B2B|B3B|F2F|VS|X|x|vs| & )\s*", re.IGNORECASE)
-                split_artists = [clean_name(n) for n in split_regex.split(combined_name) if clean_name(n)]
+                # Use the same split_regex as above (all separators require spaces)
+                split_artists = [
+                    clean_name(n)
+                    for n in split_regex.split(combined_name)
+                    if clean_name(n)
+                ]
             # DEBUG: print the split result for each name
             print(f"DEBUG SPLIT: '{combined_name}' -> {split_artists}")
             if len(split_artists) > 1:
                 for n in split_artists:
-                    merged.append({
-                        "name": n,
+                    merged.append(
+                        {
+                            "name": n,
+                            "time": parse_datetime(start),
+                            "end_time": parse_datetime(end),
+                            "stage": stage,
+                            "performance_mode": "B2B",
+                            "custom_name": clean_name(combined_name),
+                        }
+                    )
+            else:
+                mode = detect_mode(combined_name)
+                merged.append(
+                    {
+                        "name": clean_name(combined_name),
                         "time": parse_datetime(start),
                         "end_time": parse_datetime(end),
                         "stage": stage,
-                        "performance_mode": "B2B",
-                        "custom_name": clean_name(combined_name),
-                    })
-            else:
-                mode = detect_mode(combined_name)
-                merged.append({
-                    "name": clean_name(combined_name),
-                    "time": parse_datetime(start),
-                    "end_time": parse_datetime(end),
-                    "stage": stage,
-                    "performance_mode": mode,
-                })
+                        "performance_mode": mode,
+                    }
+                )
     return merged
 
 
