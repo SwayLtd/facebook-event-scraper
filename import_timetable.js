@@ -1,30 +1,7 @@
 import { DateTime } from 'luxon';
-// --- Advanced artist name normalization (copied from importEvent.js) ---
-function normalizeNameEnhanced(name) {
-    if (!name) return name;
-    let normalized = name.normalize('NFD');
-    normalized = normalized.replace(/[\u0300-\u036f]/g, "");
-    normalized = normalized.replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, "");
-    return normalized;
-}
-
-// --- High-quality SoundCloud image retrieval (copied from importEvent.js) ---
-import fetch from 'node-fetch';
-async function getBestImageUrl(avatarUrl) {
-    if (!avatarUrl) return avatarUrl;
-    if (!avatarUrl.includes('-large')) return avatarUrl;
-    const t500Url = avatarUrl.replace('-large', '-t500x500');
-    try {
-        const response = await fetch(t500Url, { method: 'HEAD' });
-        if (response.status === 200) {
-            return t500Url;
-        } else {
-            return avatarUrl;
-        }
-    } catch (error) {
-        return avatarUrl;
-    }
-}
+import { normalizeNameEnhanced } from './utils/name.js';
+import { getBestImageUrl } from './utils/artist.js';
+import { delay } from './utils/delay.js';
 /**
  * import_timetable.js
  *

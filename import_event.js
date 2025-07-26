@@ -7,6 +7,11 @@ import { scrapeFbEvent } from 'facebook-event-scraper';
 import { createClient } from '@supabase/supabase-js';
 import NodeGeocoder from 'node-geocoder';
 
+import { normalizeNameEnhanced, getNormalizedName } from './utils/name.js';
+import { getBestImageUrl } from './utils/artist.js';
+import { normalizeExternalLinks } from './utils/social.js';
+import { refineGenreName, splitCompoundTags, slugifyGenre, cleanDescription } from './utils/genre.js';
+
 // Imports OpenAI
 import OpenAI from 'openai';
 
@@ -68,96 +73,8 @@ try {
     console.error("Error loading geocoding_exceptions.json:", err);
 }
 
-// --- Social Link Normalization Helpers (from updateArtistExternalLinks.js) ---
-const URL_REGEX = /\bhttps?:\/\/[^")\s'<>]+/gi;
-const HANDLE_REGEX = /(?:IG:?|Insta:?|Instagram:?|Twitter:?|TW:?|X:?|x:?|FB:?|Facebook:?|SC:?|SoundCloud:?|Wiki:?|Wikipedia:?|BandCamp:?|BC:?|@)([A-Za-z0-9._-]+)/gi;
-const VALID_ID = /^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?$/;
 
-function normalizeSocialLink(raw) {
-    const r = raw.trim();
-    // Full URL
-    if (/^https?:\/\//i.test(r)) {
-        let url;
-        try { url = new URL(r); } catch { return null; }
-        const host = url.hostname.replace(/^www\./i, '').toLowerCase();
-        const segments = url.pathname.split('/').filter(Boolean);
-        if (segments.length !== 1) return null;
-        const id = segments[0].toLowerCase();
-        if (!VALID_ID.test(id) || id.length < 2 || ['http', 'https'].includes(id)) return null;
-        let platform;
-        switch (host) {
-            case 'instagram.com': platform = 'instagram'; break;
-            case 'twitter.com':
-            case 'x.com': platform = 'x'; break;
-            case 'facebook.com': platform = 'facebook'; break;
-            case 'soundcloud.com': platform = 'soundcloud'; break;
-            default:
-                if (host.endsWith('.bandcamp.com')) platform = 'bandcamp';
-                else if (host.endsWith('.wikipedia.org')) platform = 'wikipedia';
-                else return null;
-        }
-        return { platform, link: `${url.protocol}//${url.hostname}/${segments[0]}` };
-    }
-    // Raw handle
-    if (/^https?:/i.test(r)) return null;
-    const prefixMatch = r.match(/^[A-Za-z]+(?=[:@]?)/);
-    const prefix = prefixMatch ? prefixMatch[0].toLowerCase() : '';
-    const id = r.replace(/^[A-Za-z]+[:@]?/i, '').trim().toLowerCase();
-    if (!VALID_ID.test(id) || id.length < 2) return null;
-    if (['instagram', 'insta', 'ig'].includes(prefix)) return { platform: 'instagram', link: `https://instagram.com/${id}` };
-    if (['twitter', 'tw', 'x'].includes(prefix)) return { platform: 'x', link: `https://x.com/${id}` };
-    if (['facebook', 'fb'].includes(prefix)) return { platform: 'facebook', link: `https://facebook.com/${id}` };
-    if (['soundcloud', 'sc'].includes(prefix)) return { platform: 'soundcloud', link: `https://soundcloud.com/${id}` };
-    if (['bandcamp', 'bc'].includes(prefix)) return { platform: 'bandcamp', link: `https://${id}.bandcamp.com` };
-    if (['wikipedia', 'wiki'].includes(prefix)) return { platform: 'wikipedia', link: `https://en.wikipedia.org/wiki/${encodeURIComponent(id.replace(/\s+/g, '_'))}` };
-    return null;
-}
 
-function normalizeExternalLinks(externalLinksObj) {
-    if (!externalLinksObj || typeof externalLinksObj !== 'object') return null;
-    const normalized = {};
-    for (const [platform, data] of Object.entries(externalLinksObj)) {
-        if (!data || !data.link) continue;
-        const norm = normalizeSocialLink(data.link);
-        if (norm) normalized[platform] = { ...data, link: norm.link };
-        else normalized[platform] = data;
-    }
-    return Object.keys(normalized).length > 0 ? normalized : null;
-}
-
-// --- Setup logs for Google Maps fallback ---
-const logsDir = path.join(process.cwd(), 'logs');
-if (!fs.existsSync(logsDir)) fs.mkdirSync(logsDir, { recursive: true });
-const imageLogFile = path.join(logsDir, 'syncVenueImages.log');
-function writeImageLog(level, msg) {
-    const ts = new Date().toISOString();
-    fs.appendFileSync(imageLogFile, `${ts} [${level}] ${msg}\n`);
-}
-
-// Normalize name using exceptions file
-function getNormalizedName(originalName) {
-    if (geocodingExceptions[originalName]) {
-        return geocodingExceptions[originalName];
-    }
-    return originalName;
-}
-
-/*
- * Enhanced artist name normalization.
- * Removes non-alphanumeric characters from the beginning or end,
- * without removing symbols inside (e.g., "SANTØS" remains unchanged,
- * while "☆ fumi ☆" becomes "fumi").
- */
-function normalizeNameEnhanced(name) {
-    if (!name) return name;
-    // Separate letters from diacritics
-    let normalized = name.normalize('NFD');
-    // Remove diacritical marks
-    normalized = normalized.replace(/[\u0300-\u036f]/g, "");
-    // Remove non-alphanumeric characters at the beginning and end of the string
-    normalized = normalized.replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, "");
-    return normalized;
-}
 
 /**
  * Retrieves the URL of a Google Places photo for a given address.
@@ -311,40 +228,6 @@ function haversineDistance(lat1, lon1, lat2, lon2) {
     return R * c;
 }
 
-// --- getBestImageUrl (from import_artist.js) ---
-async function getBestImageUrl(avatarUrl) {
-    if (!avatarUrl) return avatarUrl;
-    if (!avatarUrl.includes('-large')) return avatarUrl;
-    const t500Url = avatarUrl.replace('-large', '-t500x500');
-    let retryCount = 0;
-    while (retryCount < 3) {
-        try {
-            const response = await fetch(t500Url, { method: 'HEAD' });
-            if (response.status === 200) {
-                return t500Url;
-            } else if (response.status === 429) {
-                // Rate limit reached, wait 60s and retry (max 3 tries)
-                console.warn('[getBestImageUrl] Rate limit reached for SoundCloud image. Waiting 60s before retry...');
-                await new Promise(resolve => setTimeout(resolve, 60000));
-                retryCount++;
-                continue;
-            } else {
-                return avatarUrl;
-            }
-        } catch (error) {
-            // If error is a rate limit, retry
-            if (error && error.status === 429) {
-                console.warn('[getBestImageUrl] Rate limit error (exception). Waiting 60s before retry...');
-                await new Promise(resolve => setTimeout(resolve, 60000));
-                retryCount++;
-                continue;
-            }
-            return avatarUrl;
-        }
-        break;
-    }
-    return avatarUrl;
-}
 
 // --- Ensure relation in a pivot table (unchanged) ---
 async function ensureRelation(table, relationData, relationName) {
@@ -388,44 +271,6 @@ async function fetchArtistTracks(soundcloudUserId, token) {
     }
 }
 
-/**
- * Utility function to capitalize each word in a string.
- * Example: "hard techno" -> "Hard Techno"
- */
-function capitalizeWords(str) {
-    return str.replace(/\w\S*/g, (txt) => txt.charAt(0).toUpperCase() + txt.substr(1).toLowerCase());
-}
-
-/**
- * Splits a compound tag containing known delimiters (" x ", " & ", " + ") into sub-tags.
- */
-function splitCompoundTags(tag) {
-    const delimiters = [" x ", " & ", " + "];
-    for (const delim of delimiters) {
-        if (tag.includes(delim)) {
-            return tag.split(delim).map(t => t.trim());
-        }
-    }
-    return [tag];
-}
-
-
-/**
- * Cleans a description by removing HTML tags, the "Read more on Last.fm" part,
- * and removes a possible " ." at the end of the string.
- * If, after cleaning, the description is too short (less than 30 characters), returns "".
- */
-function cleanDescription(desc) {
-    if (!desc) return "";
-    // 1. Remove all HTML tags
-    let text = desc.replace(/<[^>]*>/g, '').trim();
-    // 2. Remove "Read more on Last.fm"
-    text = text.replace(/read more on last\.fm/gi, '').trim();
-    // 3. Remove a residual " ." at the end of the description
-    text = text.replace(/\s+\.\s*$/, '');
-    // 4. Check minimum length
-    return text.length < 30 ? "" : text;
-}
 
 /**
  * Checks via Last.fm if the tag corresponds to a musical genre.
@@ -480,33 +325,6 @@ async function verifyGenreWithLastFM(tagName) {
     }
 }
 
-/**
- * refineGenreName
- *
- * This function takes a genre name (as retrieved from Last.fm or another source)
- * and reformats it for more readable display. It first applies word-by-word capitalization,
- * then detects and corrects certain special cases (for example, if the name does not contain spaces and contains
- * the word "techno", it inserts a space before "Techno"). This refinement allows for genre names such as
- * "Hard Techno" instead of "Hardtechno" for better visual clarity and uniformity in the database.
- *
- * @param {string} name - The genre name to refine.
- * @returns {string} - The reformatted genre name for display (e.g., "Hard Techno").
- */
-function refineGenreName(name) {
-    // By default, apply word-by-word capitalization
-    let refined = name.replace(/\w\S*/g, (txt) => txt.charAt(0).toUpperCase() + txt.substr(1).toLowerCase());
-
-    // Example of refinement for "techno":
-    // If the name does not contain a space but includes "techno", insert a space before "Techno"
-    if (!refined.includes(' ') && /techno/i.test(refined)) {
-        refined = refined.replace(/(.*)(techno)$/i, (match, p1, p2) => {
-            return p1.trim() + " " + p2.charAt(0).toUpperCase() + p2.slice(1).toLowerCase();
-        });
-    }
-    // You can add other conditions if necessary.
-
-    return refined;
-}
 
 /**
  * Inserts the genre into the "genres" table if it does not already exist.
@@ -604,10 +422,6 @@ function extractTagsFromTrack(track) {
     return tags;
 }
 
-function slugifyGenre(name) {
-    // Removes all non-alphanumeric characters to get a condensed version.
-    return name.replace(/\W/g, "").toLowerCase();
-}
 
 /**
  * For an artist, uses the SoundCloud API to retrieve their tracks,
@@ -1108,9 +922,6 @@ async function createEventArtistRelation(eventId, artistId, artistObj) {
         console.log(`➡️ Created event_artist relation for artist_id=${artistIdStr}`, data);
     }
 }
-
-// --- Utility function: delay ---
-const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 // --- MAIN SCRIPT ---
 async function main() {
