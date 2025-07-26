@@ -89,7 +89,7 @@ def load_csv(filepath):
 
 def group_events(events):
     """
-    Group events by (start, end, stage). If multiple artists share same slot,
+    Group events by (start, end, stage). If multiple artists share the same slot,
     combine them into a B2B.
     """
     grouped = defaultdict(list)
@@ -103,7 +103,7 @@ def group_events(events):
 
     merged = []
     for (start, end, stage), names in grouped.items():
-        # Pour chaque nom dans le slot, splitter systématiquement sur les séparateurs
+        # For each name in the slot, systematically split on separators
         for combined_name in names:
             # Exception: do not split if the name is exactly 'B2B2B2B2B'
             if combined_name.strip().lower() == "b2b2b2b2b":
