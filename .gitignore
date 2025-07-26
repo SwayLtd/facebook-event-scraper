@@ -1,16 +1,54 @@
+########################################
+# Node.js modules & build artefacts
+########################################
 node_modules
 dist
-.eslintcache
+
+########################################
+# System/OS files
+########################################
 .DS_Store
 
+########################################
+# Environment & secrets
+########################################
 .env*
 soundcloud_token.json
 
+########################################
+# Logs & temp files
+########################################
 logs/
-output.json
-artists.json
-events_url*.txt
-/events_url/
-/output*
+*.log
+*.tmp
+*.swp
+npm-debug.log*
+yarn-error.log
+
+########################################
+# IDE/editor configs
+########################################
 .vscode/
+.idea/
+
+########################################
+# Test/coverage artefacts
+########################################
+coverage/
+.nyc_output/
+*.tsbuildinfo
+
+########################################
+# Local databases
+########################################
+*.sqlite
+*.db
+
+########################################
+# Data files (import/export)
+########################################
 imports/*
+outputs/*
+*.csv
+*.xlsx
+*.bak
