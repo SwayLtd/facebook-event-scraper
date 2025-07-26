@@ -148,7 +148,7 @@ function getNormalizedName(originalName) {
  * sans retirer les symboles présents à l'intérieur (ex: "SANTØS" reste inchangé,
  * alors que "☆ fumi ☆" devient "fumi").
  */
-function normalizeArtistNameEnhanced(name) {
+function normalizeNameEnhanced(name) {
     if (!name) return name;
     // Séparer les lettres des diacritiques
     let normalized = name.normalize('NFD');
@@ -911,7 +911,7 @@ async function findOrInsertArtist(artistObj) {
     if (!artistName) return null;
 
     // 1. Normalisation du nom
-    artistName = normalizeArtistNameEnhanced(artistName);
+    artistName = normalizeNameEnhanced(artistName);
 
     // 2. Recherche sur SoundCloud
     const token = await getAccessToken();
@@ -1299,10 +1299,10 @@ async function main() {
                             }
 
                             // 2D-3) Copier l’image du promoteur si les noms correspondent
-                            const normVenue = normalizeArtistNameEnhanced(normalizedVenueName).toLowerCase();
+                            const normVenue = normalizeNameEnhanced(normalizedVenueName).toLowerCase();
                             const matchingPromo = promoterInfos.find(p =>
                                 p.image_url &&
-                                normalizeArtistNameEnhanced(p.name).toLowerCase() === normVenue
+                                normalizeNameEnhanced(p.name).toLowerCase() === normVenue
                             );
                             if (matchingPromo) {
                                 newVenueData.image_url = matchingPromo.image_url;
@@ -1465,8 +1465,8 @@ async function main() {
                 for (const pInfo of promoterInfos) {
                     if (
                         pInfo.id &&
-                        normalizeArtistNameEnhanced(pInfo.name).toLowerCase() ===
-                        normalizeArtistNameEnhanced(venueName).toLowerCase()
+                        normalizeNameEnhanced(pInfo.name).toLowerCase() ===
+                        normalizeNameEnhanced(venueName).toLowerCase()
                     ) {
                         await ensureRelation(
                             "venue_promoter",
