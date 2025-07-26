@@ -4,6 +4,9 @@
 const fs = require('fs');
 const TOKEN_FILE = 'soundcloud_token.json';
 
+/**
+ * Retrieves the stored access token from TOKEN_FILE if it exists and is still valid.
+ */
 async function getStoredToken() {
     if (fs.existsSync(TOKEN_FILE)) {
         const data = JSON.parse(fs.readFileSync(TOKEN_FILE, 'utf8'));

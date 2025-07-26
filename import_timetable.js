@@ -38,7 +38,7 @@ const DRY_RUN = process.env.DRY_RUN === 'true';
 const SOUND_CLOUD_CLIENT_ID = process.env.SOUND_CLOUD_CLIENT_ID;
 const SOUND_CLOUD_CLIENT_SECRET = process.env.SOUND_CLOUD_CLIENT_SECRET;
 const TOKEN_URL = 'https://api.soundcloud.com/oauth2/token';
-const TOKEN_FILE = path.join(__dirname, 'soundcloud_token.json');
+import tokenUtils from './utils/token.js';
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -65,44 +65,12 @@ function logMessage(msg) {
     fs.appendFileSync(logFilePath, fullMsg + "\n");
 }
 
-// --- Utility functions ---
-const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
-
-/**
- * Retrieves the stored access token from TOKEN_FILE if it exists and is still valid.
- */
-async function getStoredToken() {
-    if (fs.existsSync(TOKEN_FILE)) {
-        try {
-            const data = JSON.parse(fs.readFileSync(TOKEN_FILE, 'utf8'));
-            if (data.expiration && Date.now() < data.expiration) {
-                logMessage("Using stored SoundCloud access token.");
-                return data.token;
-            } else {
-                logMessage("Stored SoundCloud access token is expired.");
-            }
-        } catch (err) {
-            logMessage("Error reading token file: " + err);
-        }
-    }
-    return null;
-}
-
-/**
- * Stores the access token along with its expiration time.
- */
-function storeToken(token, expiresIn) {
-    const expiration = Date.now() + (expiresIn * 1000) - 60000; // 1 minute buffer
-    const data = { token, expiration };
-    fs.writeFileSync(TOKEN_FILE, JSON.stringify(data, null, 2));
-    logMessage("Access token stored successfully.");
-}
 
 /**
  * Obtains an access token from SoundCloud using client credentials.
  */
 async function getAccessToken() {
-    let token = await getStoredToken();
+    let token = await tokenUtils.getStoredToken();
     if (token) return token;
 
     try {
@@ -117,7 +85,7 @@ async function getAccessToken() {
 
         token = response.data.access_token;
         const expiresIn = response.data.expires_in;
-        storeToken(token, expiresIn);
+        await tokenUtils.storeToken(token, expiresIn);
         logMessage("New SoundCloud access token obtained successfully.");
         return token;
     } catch (error) {

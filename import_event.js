@@ -1,5 +1,4 @@
 import 'dotenv/config';  // Load environment variables from a .env file if present
-import path from 'path';
 import fs from 'fs';
 import fetch from 'node-fetch';  // Ensure node-fetch is installed
 import stringSimilarity from 'string-similarity'; // For fuzzy matching
@@ -16,8 +15,8 @@ import { refineGenreName, splitCompoundTags, slugifyGenre, cleanDescription } fr
 import OpenAI from 'openai';
 
 // --- Global Parameters ---
-const DRY_RUN = false;            // Set true for dry-run mode (no DB writes)
-const FUZZY_THRESHOLD = 0.75;     // Similarity threshold for fuzzy matching
+const DRY_RUN = false; // Set true for dry-run mode (no DB writes)
+const FUZZY_THRESHOLD = 0.75; // Similarity threshold for fuzzy matching
 const MIN_GENRE_OCCURRENCE = 3; // Minimum occurrences for genre assignment
 
 const bannedGenres = ["90s", "Disco", "Dub", "Guaracha", "Bootleg", "Montreal", "Lebanon", "Stereo", "Berghain", "Jaw", "Not", "Monster", "Dream", "Drone", "Eurodance", "Storytelling", "Nostalgic", "Guitar", "Art", "Future", "Romania", "Drums", "Atmosphere", "Emo", "Lyrical", "Indonesia", "Mood", "Mellow", "Work", "Feminism", "Download", "This", "Poetry", "Sound", "Malibu", "Twek", "Money", "Orgasm", "Cover", "Viral", "Sexy", "Z", "Nas", "Weird", "P", "Indonesion", "Funky", "Tearout", "Uplifting", "Love", "Core", "Violin", "Simpsons", "Riddim", "World Music", "Dancehall", "Gbr", "Fußball", "German", "New", "Eargasm", "Ecstasy", "Coldwave", "Brazilian", "Beat", "Song", "Soulful", "Smooth", "Contemporary", "Ballad", "Modern", "Beyonce", "Occult", "Evil", "Vinyl", "2000's", "Dog", "Gangsta", "Hair", "Soundtrack", "Hard Drance", "Bassline", "Queer", "Interview", "Krautrock", "Soundscape", "Darkwave", "Atmospheric", "Americana", "Mpc", "Detroit", "Fast", "Argentina", "Emotional", "Germany", "Frankfurt", "Karlsruhe", "Driving", "Cosmic", "Summer", "Basement", "Beachbar", "Party", "Producer", "Alive", "Pulse", "Coding", "Offensive", "Alex", "Time", "Soho", "Spring", "Aus", "X", "Modern Dancehall", "Elektra", "Piano", "Italo", "Synth", "Ghetto", "Moombahton", "Ghetto", "Chicago", "Happy", "80s", "Munich", "Melancholic", "Samples", "Madrid", "Amapiano", "00s", "Breakbeat", "Retro", "Breakz", "Spain", "Pandora", "Tropical", "Latin Pop", "Night", "Aussie", "Australian", "Fire", "Hot", "Spotify", "Ur", "2step", "Lonely", "Sad", "Angry", "Heavy", "Hex", "A", "Complex", "Freestyle", "Mainstream", "All", "Long", "Antifa", "Horror", "Scary", "Japan", "Popular", "Memphis", "Nostalgia", "Ost", "Speech", "Shoegaze", "Orchestral", "London", "Kinky", "Tresor", "Chillout", "Cool", "Sun", "Ethnic", "Banjo", "Trippy", "Persian", "Traditional", "Persian Traditional", "Bochka", "Oh", "God", "Kids", "Compilation", "Ghost", "Space", "Christ", "Based", "De", "Juke", "Gent", "Valearic", "Ebm", "Sac-sha", "Amsterdam", "Noise", "Eclectic", "Hi-nrg", "Antwerp", "Feelgood", "Body", "Indie Dance", "Barcelona", "Fusion", "C", "Comedy", "Zephyr", "E", "Tiktok", "Brasil", "O", "It", "Us", "Yes", "Scantraxx", "Qlimax", "Style", "Italian", "Spiritual", "Quiet", "Best", "Denver", "Colorado", "Soca", "Bobo", "G", "Zouk", "Booba", "Game", "Cello", "Jam", "Hardtekk", "Break", "Goa", "Boogie", "Idm", "Haldtime", "Spanish", "Screamo", "Ra", "Jersey", "Organ", "Palestine", "Congo", "Healing", "Minecraft", "Cyberpunk", "Television", "Film", "Cursed", "Crossbreed", "Funama", "Kuduro", "Mashups", "Collaboration", "France", "Alien", "Banger", "Tool", "Insomnia", "Flow", "Kafu", "Adele", "Makina", "Manchester", "Salford", "Macedonia", "Japanese", "Relax", "Relaxing", "Relaxation", "Is", "Bdr", "Bier", "Jckson", "Jersey Club", "Big Room", "Brooklyn", "Coffee", "Green", "Tekkno", "Flips", "Sia", "Ccr", "Ai", "Unicorn", "Q", "Aversion", "Gym", "Get", "Buningman", "Rotterdam", "Matrix", "Indian", "Brazil", "S", "Hybrid", "Beats", "Singer", "Ans", "Theme", "Future Bass", "Club House", "Glam", "Aggressive", "Prog", "Technoid", "Funny", "Raggamuffin", "Bangface", "Bandcamp", "Bristol", "Organic", "Brazilian Phonk", "Revolution", "Afterlife", "Rockabilly", "Tune", "Brixton", "Psydub", "Harmony", "Montana", "Imaginarium", "Cheesy", "Choral", "other", "mixtape", "world", "venice", "hate", "bbc", "original", "hip", "Indie", "dan", "wave", "J", "deep", "holiday", "berlin", "Classic", "fun", "Electric", "Leftfield", "Italo-disco", "Electronica", "Singer-songwriter", "alternative", "sampled", "anime", "hit", "speed garage", "groovy", "donk", "latin", "R", "soul", "trash", "vocal", "alternative rock", "werewolf", "christmas", "xmas", "amen", "fox", "you", "Dl", "girl", "Intelligent", "audio", "musical", "tony", "moon", "ukf", "zombies", "Complextro", "Doom", "death", "Monstercat", "cake", "scene", "queen", "slam", "fox", "Czech", "workout", "winter", "modus", "iaginarium", "avalon", "fullon", "football", "colombia", "portugal", "badass", "recorder", "chile", "road", "breton", "sufi", "chanson", "noize", "balada", "running", "footwork", "santa", "crazy", "microwave", "bop", "great", "carnaval", "standard", "demo", "twilight", "female", "hippie", "community", "meditative", "yoga", "meditation", "drop", "haunting", "chant", "Birmingham", "opium", "combo", "austria", "old", "worldwide", "free", "rap", "d", "snap", "n", "hip-hop", "hiphip", "breaks", "electronic", "belgian", "belgium", "up", "noir", "bass", "murder", "ep", "rave", "bad", "oldschool", "music", "remix", "track", "podcast", "dance", "set", "festival", "ecstacy", "uk", "live", "paris", "internet", "episode", "r", "D", "club", "dj", "mix", "radio", "soundcloud", "sesh"];
@@ -117,7 +116,7 @@ const supabase = createClient(supabaseUrl, serviceKey);
 const openai = new OpenAI({ apiKey: openAIApiKey });
 
 // --- SoundCloud Token Management ---
-const TOKEN_FILE = 'soundcloud_token.json';
+import tokenUtils from './utils/token.js';
 
 // Load banned genre IDs into memory
 // After instantiating `supabase = createClient(...)`:
@@ -128,32 +127,10 @@ const { data: bannedGenreRecords, error: bannedError } = await supabase
 if (bannedError) throw bannedError;
 const bannedGenreIds = bannedGenreRecords.map(r => r.id);
 
-async function getStoredToken() {
-    if (fs.existsSync(TOKEN_FILE)) {
-        try {
-            const data = JSON.parse(fs.readFileSync(TOKEN_FILE, 'utf8'));
-            if (data.expiration && Date.now() < data.expiration) {
-                console.log("[SoundCloud] Using stored access token.");
-                return data.token;
-            } else {
-                console.log("[SoundCloud] Stored access token is expired.");
-            }
-        } catch (err) {
-            console.log("[SoundCloud] Error reading token file:", err);
-        }
-    }
-    return null;
-}
 
-async function storeToken(token, expiresIn) {
-    const expiration = Date.now() + expiresIn * 1000;
-    const data = { token, expiration };
-    fs.writeFileSync(TOKEN_FILE, JSON.stringify(data, null, 2), 'utf8');
-    console.log("[SoundCloud] Access token stored.");
-}
 
 async function getAccessToken() {
-    let token = await getStoredToken();
+    let token = await tokenUtils.getStoredToken();
     if (token) return token;
     try {
         const response = await fetch(`${TOKEN_URL}?client_id=${SOUND_CLOUD_CLIENT_ID}&client_secret=${SOUND_CLOUD_CLIENT_SECRET}&grant_type=client_credentials`, {
@@ -163,7 +140,7 @@ async function getAccessToken() {
         token = data.access_token;
         const expiresIn = data.expires_in || 3600;
         console.log("[SoundCloud] Access token obtained:", token);
-        await storeToken(token, expiresIn);
+        await tokenUtils.storeToken(token, expiresIn);
         return token;
     } catch (error) {
         console.error("[SoundCloud] Error obtaining access token:", error);
@@ -215,18 +192,7 @@ async function fetchAddressFromNominatim(lat, lon) {
     return null;
 }
 
-function haversineDistance(lat1, lon1, lat2, lon2) {
-    const R = 6371000;
-    const toRad = (x) => (x * Math.PI) / 180;
-    const dLat = toRad(lat2 - lat1);
-    const dLon = toRad(lon2 - lon1);
-    const a =
-        Math.sin(dLat / 2) ** 2 +
-        Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) *
-        Math.sin(dLon / 2) ** 2;
-    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-    return R * c;
-}
+import geoUtils from './utils/geo.js';
 
 
 // --- Ensure relation in a pivot table (unchanged) ---
