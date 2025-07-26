@@ -10,8 +10,7 @@ import { normalizeNameEnhanced, getNormalizedName } from './utils/name.js';
 import { getBestImageUrl } from './utils/artist.js';
 import { normalizeExternalLinks } from './utils/social.js';
 import { refineGenreName, splitCompoundTags, slugifyGenre, cleanDescription } from './utils/genre.js';
-
-// Imports OpenAI
+import tokenUtils from './utils/token.js';
 import OpenAI from 'openai';
 
 // --- Global Parameters ---
@@ -31,12 +30,6 @@ const SOUND_CLOUD_CLIENT_ID = process.env.SOUND_CLOUD_CLIENT_ID;
 const SOUND_CLOUD_CLIENT_SECRET = process.env.SOUND_CLOUD_CLIENT_SECRET;
 const LASTFM_API_KEY = process.env.LASTFM_API_KEY;    // To validate tags/genres via Last.fm
 const TOKEN_URL = 'https://api.soundcloud.com/oauth2/token';
-
-const geocoder = NodeGeocoder({
-    provider: 'openstreetmap',
-    httpAdapter: 'https',
-    formatter: null
-});
 
 // Basic checks
 if (!supabaseUrl || !serviceKey) {
@@ -64,6 +57,19 @@ if (!LASTFM_API_KEY) {
     process.exit(1);
 }
 
+// Initialize Supabase client
+const supabase = createClient(supabaseUrl, serviceKey);
+
+// Initialize OpenAI client
+const openai = new OpenAI({ apiKey: openAIApiKey });
+
+// Initialize Geocoder
+const geocoder = NodeGeocoder({
+    provider: 'openstreetmap',
+    httpAdapter: 'https',
+    formatter: null
+});
+
 // Load geocoding exceptions
 let geocodingExceptions = {};
 try {
@@ -72,9 +78,41 @@ try {
     console.error("Error loading geocoding_exceptions.json:", err);
 }
 
+// Load geocoding exceptions
 
+// Load banned genre IDs into memory
+async function getBannedGenreIds() {
+    const { data: bannedGenreRecords, error: bannedError } = await supabase
+        .from('genres')
+        .select('id')
+        .in('name', bannedGenres.map(g => refineGenreName(g)));
+    if (bannedError) throw bannedError;
+    return bannedGenreRecords.map(r => r.id);
+}
 
+let bannedGenreIds = [];
 
+// --- SoundCloud Token Management ---
+async function getAccessToken() {
+    let token = await tokenUtils.getStoredToken();
+    if (token) return token;
+    try {
+        const response = await fetch(`${TOKEN_URL}?client_id=${SOUND_CLOUD_CLIENT_ID}&client_secret=${SOUND_CLOUD_CLIENT_SECRET}&grant_type=client_credentials`, {
+            method: 'POST'
+        });
+        const data = await response.json();
+        token = data.access_token;
+        const expiresIn = data.expires_in || 3600;
+        console.log("[SoundCloud] Access token obtained:", token);
+        await tokenUtils.storeToken(token, expiresIn);
+        return token;
+    } catch (error) {
+        console.error("[SoundCloud] Error obtaining access token:", error);
+        return null;
+    }
+}
+
+// --- Venues Management ---
 /**
  * Retrieves the URL of a Google Places photo for a given address.
  */
@@ -85,7 +123,7 @@ async function fetchGoogleVenuePhoto(name, address) {
     );
     const geoJson = await geoRes.json();
     if (!geoJson.results?.length) throw new Error('No geocoding results');
-    const { lat, lng } = geoJson.results[0].geometry.location;
+    // lat, lng are not used elsewhere
 
     // findPlaceFromText to get place_id
     const findRes = await fetch(
@@ -109,62 +147,11 @@ async function fetchGoogleVenuePhoto(name, address) {
     return `https://maps.googleapis.com/maps/api/place/photo?maxwidth=800&photoreference=${photoRef}&key=${process.env.GOOGLE_API_KEY}`;
 }
 
-// Initialize Supabase client
-const supabase = createClient(supabaseUrl, serviceKey);
-
-// Initialize OpenAI client
-const openai = new OpenAI({ apiKey: openAIApiKey });
-
-// --- SoundCloud Token Management ---
-import tokenUtils from './utils/token.js';
-
-// Load banned genre IDs into memory
-// After instantiating `supabase = createClient(...)`:
-const { data: bannedGenreRecords, error: bannedError } = await supabase
-    .from('genres')
-    .select('id')
-    .in('name', bannedGenres.map(g => refineGenreName(g)));
-if (bannedError) throw bannedError;
-const bannedGenreIds = bannedGenreRecords.map(r => r.id);
-
-
-
-async function getAccessToken() {
-    let token = await tokenUtils.getStoredToken();
-    if (token) return token;
-    try {
-        const response = await fetch(`${TOKEN_URL}?client_id=${SOUND_CLOUD_CLIENT_ID}&client_secret=${SOUND_CLOUD_CLIENT_SECRET}&grant_type=client_credentials`, {
-            method: 'POST'
-        });
-        const data = await response.json();
-        token = data.access_token;
-        const expiresIn = data.expires_in || 3600;
-        console.log("[SoundCloud] Access token obtained:", token);
-        await tokenUtils.storeToken(token, expiresIn);
-        return token;
-    } catch (error) {
-        console.error("[SoundCloud] Error obtaining access token:", error);
-        return null;
-    }
-}
-
-// --- Geocoding / Image Fetch Functions (unchanged) ---
-async function fetchHighResImage(objectId) {
-    try {
-        const response = await fetch(`https://graph.facebook.com/${objectId}?fields=picture.width(720).height(720)&access_token=${longLivedToken}`);
-        const data = await response.json();
-        if (data.picture && data.picture.data && data.picture.data.url) {
-            return data.picture.data.url;
-        }
-    } catch (err) {
-        console.error("Error fetching high resolution image:", err);
-    }
-    return null;
-}
-
 async function fetchAddressFromGoogle(venueName) {
     try {
-        const response = await fetch(`https://maps.googleapis.com/maps/api/geocode/json?address=${encodeURIComponent(venueName)}&key=${googleApiKey}`);
+        // Correct name via geocodingExceptions if present
+        const correctedName = geocodingExceptions[venueName] || venueName;
+        const response = await fetch(`https://maps.googleapis.com/maps/api/geocode/json?address=${encodeURIComponent(correctedName)}&key=${googleApiKey}`);
         const data = await response.json();
         if (data.status === "OK" && data.results && data.results.length > 0) {
             return data.results[0];
@@ -192,29 +179,355 @@ async function fetchAddressFromNominatim(lat, lon) {
     return null;
 }
 
-import geoUtils from './utils/geo.js';
+// --- Promoters Management ---
+/**
+ * Finds or inserts a promoter, then returns { id, name, image_url }.
+ */
+async function findOrInsertPromoter(promoterName, eventData) {
+    const normalizedName = getNormalizedName(promoterName);
 
+    // 1) Exact match on the name
+    const { data: exactMatches, error: exactError } = await supabase
+        .from('promoters')
+        .select('id, name, image_url')
+        .eq('name', normalizedName);
+    if (exactError) throw exactError;
 
-// --- Ensure relation in a pivot table (unchanged) ---
-async function ensureRelation(table, relationData, relationName) {
-    const { data, error } = await supabase
-        .from(table)
-        .select()
-        .match(relationData);
-    if (error) throw error;
-    if (!data || data.length === 0) {
-        const { error: insertError } = await supabase
-            .from(table)
-            .insert(relationData);
-        if (insertError) throw insertError;
-        console.log(`✅ ${relationName} relation created: ${JSON.stringify(relationData)}`);
+    if (exactMatches && exactMatches.length > 0) {
+        const p = exactMatches[0];
+        console.log(`➡️ Promoter "${promoterName}" found (exact) → id=${p.id}`);
+        return { id: p.id, name: p.name, image_url: p.image_url };
+    }
+
+    // 2) Fuzzy match against all existing promoters
+    const { data: allPromoters, error: allError } = await supabase
+        .from('promoters')
+        .select('id, name, image_url');
+    if (allError) throw allError;
+
+    if (allPromoters && allPromoters.length > 0) {
+        const names = allPromoters.map(p => p.name.toLowerCase());
+        const { bestMatch, bestMatchIndex } = stringSimilarity.findBestMatch(
+            normalizedName.toLowerCase(),
+            names
+        );
+        if (bestMatch.rating >= FUZZY_THRESHOLD) {
+            const p = allPromoters[bestMatchIndex];
+            console.log(
+                `➡️ Promoter "${promoterName}" similar to "${p.name}" → id=${p.id}`
+            );
+            return { id: p.id, name: p.name, image_url: p.image_url };
+        }
+    }
+
+    // 3) Insertion of a new promoter
+    console.log(`➡️ Inserting a new promoter "${promoterName}"…`);
+    const promoterSource = eventData.hosts.find(h => h.name === promoterName);
+    const newPromoterData = { name: normalizedName };
+
+    // try to get a high-resolution image via Facebook Graph
+    if (promoterSource?.id) {
+        const highRes = await fetchHighResImage(promoterSource.id);
+        if (highRes) newPromoterData.image_url = highRes;
+    }
+
+    // fallback to photo.imageUri if available
+    if (!newPromoterData.image_url && promoterSource?.photo?.imageUri) {
+        newPromoterData.image_url = promoterSource.photo.imageUri;
+    }
+
+    const { data: inserted, error: insertError } = await supabase
+        .from('promoters')
+        .insert(newPromoterData)
+        .select('id, name, image_url');
+    if (insertError || !inserted || inserted.length === 0) {
+        throw insertError || new Error('Promoter insertion failed');
+    }
+
+    const created = inserted[0];
+    console.log(
+        `✅ Promoter inserted: "${promoterName}" → id=${created.id}`
+    );
+    return {
+        id: created.id,
+        name: created.name,
+        image_url: created.image_url ?? null
+    };
+}
+
+/**
+ * For a promoter, deduces their genres via their events.
+ * Only occurrences reaching MIN_GENRE_OCCURRENCE and not banned
+ * will be assigned; otherwise, fallback to the top 5.
+ */
+async function assignPromoterGenres(promoterId) {
+    // 1) Get the promoter's events
+    const { data: promoterEvents, error: peError } = await supabase
+        .from('event_promoter')
+        .select('event_id')
+        .eq('promoter_id', promoterId);
+    if (peError) throw peError;
+
+    // 2) Count the genres of these events
+    const genreCounts = {};
+    for (const { event_id } of promoterEvents) {
+        const { data: eventGenres, error: egError } = await supabase
+            .from('event_genre')
+            .select('genre_id')
+            .eq('event_id', event_id);
+        if (egError) throw egError;
+        eventGenres.forEach(g => {
+            genreCounts[g.genre_id] = (genreCounts[g.genre_id] || 0) + 1;
+        });
+    }
+
+    // 3) First filter: threshold + exclusion of banned genres
+    let topGenreIds = Object.entries(genreCounts)
+        .filter(([genreId, count]) =>
+            count >= MIN_GENRE_OCCURRENCE &&
+            !bannedGenreIds.includes(Number(genreId))
+        )
+        .sort(([, a], [, b]) => b - a)
+        .slice(0, 5)
+        .map(([genreId]) => Number(genreId));
+
+    // 4) More permissive fallback
+    if (topGenreIds.length === 0) {
+        topGenreIds = Object.entries(genreCounts)
+            .filter(([genreId]) => !bannedGenreIds.includes(Number(genreId)))
+            .sort(([, a], [, b]) => b - a)
+            .slice(0, 3)
+            .map(([genreId]) => Number(genreId));
+
+        console.log(
+            `[Genres] No genre ≥ ${MIN_GENRE_OCCURRENCE} non-banned occurrences for promoter ${promoterId}, ` +
+            `fallback top 3 without threshold:`,
+            topGenreIds
+        );
     } else {
-        console.log(`➡️ ${relationName} relation already exists: ${JSON.stringify(relationData)}`);
+        console.log(
+            `[Genres] Top genres for promoter ${promoterId} (threshold ${MIN_GENRE_OCCURRENCE}):`,
+            topGenreIds
+        );
+    }
+
+    // 5) Save in promoter_genre
+    for (const genreId of topGenreIds) {
+        await ensureRelation(
+            "promoter_genre",
+            { promoter_id: promoterId, genre_id: genreId },
+            "promoter_genre"
+        );
+    }
+
+    return topGenreIds;
+}
+
+// --- Artists Management ---
+async function findOrInsertArtist(artistObj) {
+    // artistObj: { name, time, soundcloud, stage, performance_mode }
+    let artistName = (artistObj.name || '').trim();
+    if (!artistName) return null;
+
+    // 1. Name normalization
+    artistName = normalizeNameEnhanced(artistName);
+
+    // 2. Search on SoundCloud
+    const token = await getAccessToken();
+    let scArtist = null;
+    if (token) {
+        scArtist = await searchArtist(artistName, token);
+    }
+
+    // 3. Construction of the artistData object
+    let artistData;
+    if (scArtist) {
+        // If found on SC, extract enriched info
+        artistData = await extractArtistInfo(scArtist);
+    } else {
+        // Otherwise minimal fallback
+        artistData = {
+            name: artistName,
+            external_links: artistObj.soundcloud
+                ? { soundcloud: { link: artistObj.soundcloud } }
+                : null,
+        };
+    }
+    // --- Social link normalization ---
+    if (artistData.external_links) {
+        artistData.external_links = normalizeExternalLinks(artistData.external_links);
+    }
+
+    // 4. Duplicate detection via SoundCloud link
+    if (artistData.external_links?.soundcloud?.id) {
+        const { data: existingByExternal, error: extError } = await supabase
+            .from('artists')
+            .select('id')
+            .eq('external_links->soundcloud->>id', artistData.external_links.soundcloud.id);
+        if (extError) throw extError;
+        if (existingByExternal.length > 0) {
+            console.log(`➡️ Artist exists by external link: "${artistName}" (id=${existingByExternal[0].id})`);
+            return existingByExternal[0].id;
+        }
+    }
+
+    // 5. Duplicate detection via name
+    const { data: existingByName, error: nameError } = await supabase
+        .from('artists')
+        .select('id')
+        .ilike('name', artistName);
+    if (nameError) throw nameError;
+    if (existingByName.length > 0) {
+        console.log(`➡️ Artist exists by name: "${artistName}" (id=${existingByName[0].id})`);
+        return existingByName[0].id;
+    }
+
+    // 6. Insertion of the new artist
+    const { data: inserted, error: insertError } = await supabase
+        .from('artists')
+        .insert(artistData)
+        .select();
+    if (insertError || !inserted) throw insertError || new Error("Could not insert artist");
+    const newArtistId = inserted[0].id;
+    console.log(`✅ Artist inserted: "${artistName}" (id=${newArtistId})`);
+
+    // 7. Processing and linking genres
+    try {
+        const genres = await processArtistGenres(inserted[0]);
+        for (const genreObj of genres) {
+            if (genreObj.id) {
+                // ✨ DnB alias detected → direct link to the forced ID (437)
+                await linkArtistGenre(newArtistId, genreObj.id);
+                console.log(`   ↳ Linked artist to forced genre_id=${genreObj.id}`);
+            } else {
+                // Normal workflow for other genres
+                const genreId = await insertGenreIfNew(genreObj);
+                await linkArtistGenre(newArtistId, genreId);
+                console.log(`   ↳ Linked artist to genre_id=${genreId}`);
+            }
+        }
+    } catch (err) {
+        console.error("❌ Error processing genres for artist:", artistName, err);
+    }
+
+    return newArtistId;
+}
+
+async function searchArtist(artistName, accessToken) {
+    try {
+        const url = `https://api.soundcloud.com/users?q=${encodeURIComponent(artistName)}&limit=1`;
+        const response = await fetch(url, {
+            headers: { "Authorization": `OAuth ${accessToken}` }
+        });
+        const data = await response.json();
+        if (!data || data.length === 0) {
+            console.log(`No SoundCloud artist found for: ${artistName}`);
+            return null;
+        }
+        return data[0];
+    } catch (error) {
+        console.error("Error searching for artist on SoundCloud:", error);
+        return null;
     }
 }
 
-// --- Additional Functions for Genre Management ---
+async function extractArtistInfo(artist) {
+    const bestImageUrl = await getBestImageUrl(artist.avatar_url);
+    return {
+        name: artist.username,
+        image_url: bestImageUrl,
+        description: artist.description,
+        location_info: {
+            country: artist.country || null,
+            city: artist.city || null
+        },
+        external_links: {
+            soundcloud: {
+                link: artist.permalink_url,
+                id: String(artist.id)
+            }
+        }
+    };
+}
 
+async function createEventArtistRelation(eventId, artistId, artistObj) {
+    if (!artistId) return;
+    const artistIdStr = String(artistId);
+
+    let startTime = null;
+    let endTime = null;
+    const stage = artistObj.stage || null;
+    const customName = null;
+
+    if (artistObj.time && artistObj.time.trim() !== "") {
+        const match = artistObj.time.match(/(\d{1,2}:\d{2})-?(\d{1,2}:\d{2})?/);
+        if (match) {
+            const startStr = match[1];
+            const endStr = match[2] || null;
+            if (startStr) {
+                startTime = `2025-06-27T${startStr}:00`;
+            }
+            if (endStr) {
+                endTime = `2025-06-27T${endStr}:00`;
+            }
+        }
+    }
+
+    let query = supabase
+        .from('event_artist')
+        .select('*')
+        .eq('event_id', eventId);
+
+    if (stage === null) {
+        query = query.is('stage', null);
+    } else {
+        query = query.eq('stage', stage);
+    }
+    query = query.is('custom_name', null);
+    if (startTime === null) {
+        query = query.is('start_time', null);
+    } else {
+        query = query.eq('start_time', startTime);
+    }
+    if (endTime === null) {
+        query = query.is('end_time', null);
+    } else {
+        query = query.eq('end_time', endTime);
+    }
+    query = query.contains('artist_id', [artistIdStr]);
+
+    const { data: existing, error } = await query;
+    if (error) {
+        console.error("Error during existence check:", error);
+        throw error;
+    }
+    if (existing && existing.length > 0) {
+        console.log(`➡️ A row already exists for artist_id=${artistIdStr} with the same performance details.`);
+        return;
+    }
+
+    const row = {
+        event_id: eventId,
+        artist_id: [artistIdStr],
+        start_time: startTime,
+        end_time: endTime,
+        status: 'confirmed',
+        stage: stage,
+        custom_name: customName
+    };
+
+    const { data, error: insertError } = await supabase
+        .from('event_artist')
+        .insert(row)
+        .select();
+    if (insertError) {
+        console.error("Error creating event_artist relation:", insertError);
+    } else {
+        console.log(`➡️ Created event_artist relation for artist_id=${artistIdStr}`, data);
+    }
+}
+
+// --- Genres Management ---
 /**
  * Fetches artist tracks from SoundCloud based on the SoundCloud user ID.
  */
@@ -236,7 +549,6 @@ async function fetchArtistTracks(soundcloudUserId, token) {
         return [];
     }
 }
-
 
 /**
  * Checks via Last.fm if the tag corresponds to a musical genre.
@@ -290,7 +602,6 @@ async function verifyGenreWithLastFM(tagName) {
         return { valid: false };
     }
 }
-
 
 /**
  * Inserts the genre into the "genres" table if it does not already exist.
@@ -387,7 +698,6 @@ function extractTagsFromTrack(track) {
     console.log(`[Genres] For track "${track.title || 'unknown'}", extracted tags: ${JSON.stringify(tags)}`);
     return tags;
 }
-
 
 /**
  * For an artist, uses the SoundCloud API to retrieve their tracks,
@@ -540,352 +850,51 @@ async function assignEventGenres(eventId) {
     return topGenreIds;
 }
 
+// --- Generic Utilities ---
+
 /**
- * For a promoter, deduces their genres via their events.
- * Only occurrences reaching MIN_GENRE_OCCURRENCE and not banned
- * will be assigned; otherwise, fallback to the top 5.
+ * Calculates the distance between two GPS coordinates.
  */
-async function assignPromoterGenres(promoterId) {
-    // 1) Get the promoter's events
-    const { data: promoterEvents, error: peError } = await supabase
-        .from('event_promoter')
-        .select('event_id')
-        .eq('promoter_id', promoterId);
-    if (peError) throw peError;
-
-    // 2) Count the genres of these events
-    const genreCounts = {};
-    for (const { event_id } of promoterEvents) {
-        const { data: eventGenres, error: egError } = await supabase
-            .from('event_genre')
-            .select('genre_id')
-            .eq('event_id', event_id);
-        if (egError) throw egError;
-        eventGenres.forEach(g => {
-            genreCounts[g.genre_id] = (genreCounts[g.genre_id] || 0) + 1;
-        });
-    }
-
-    // 3) First filter: threshold + exclusion of banned genres
-    let topGenreIds = Object.entries(genreCounts)
-        .filter(([genreId, count]) =>
-            count >= MIN_GENRE_OCCURRENCE &&
-            !bannedGenreIds.includes(Number(genreId))
-        )
-        .sort(([, a], [, b]) => b - a)
-        .slice(0, 5)
-        .map(([genreId]) => Number(genreId));
-
-    // 4) More permissive fallback
-    if (topGenreIds.length === 0) {
-        topGenreIds = Object.entries(genreCounts)
-            .filter(([genreId]) => !bannedGenreIds.includes(Number(genreId)))
-            .sort(([, a], [, b]) => b - a)
-            .slice(0, 3)
-            .map(([genreId]) => Number(genreId));
-
-        console.log(
-            `[Genres] No genre ≥ ${MIN_GENRE_OCCURRENCE} non-banned occurrences for promoter ${promoterId}, ` +
-            `fallback top 3 without threshold:`,
-            topGenreIds
-        );
-    } else {
-        console.log(
-            `[Genres] Top genres for promoter ${promoterId} (threshold ${MIN_GENRE_OCCURRENCE}):`,
-            topGenreIds
-        );
-    }
-
-    // 5) Save in promoter_genre
-    for (const genreId of topGenreIds) {
-        await ensureRelation(
-            "promoter_genre",
-            { promoter_id: promoterId, genre_id: genreId },
-            "promoter_genre"
-        );
-    }
-
-    return topGenreIds;
+function haversineDistance(lat1, lon1, lat2, lon2) {
+    const R = 6371000; // Earth's radius in meters
+    const toRad = (x) => (x * Math.PI) / 180;
+    const dLat = toRad(lat2 - lat1);
+    const dLon = toRad(lon2 - lon1);
+    const a =
+        Math.sin(dLat / 2) ** 2 +
+        Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) *
+        Math.sin(dLon / 2) ** 2;
+    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+    return R * c;
 }
 
-// --- Existing Manage Promoters (unchanged) ---
-/**
- * Finds or inserts a promoter, then returns { id, name, image_url }.
- */
-async function findOrInsertPromoter(promoterName, eventData) {
-    const normalizedName = getNormalizedName(promoterName);
-
-    // 1) Exact match on the name
-    const { data: exactMatches, error: exactError } = await supabase
-        .from('promoters')
-        .select('id, name, image_url')
-        .eq('name', normalizedName);
-    if (exactError) throw exactError;
-
-    if (exactMatches && exactMatches.length > 0) {
-        const p = exactMatches[0];
-        console.log(`➡️ Promoter "${promoterName}" found (exact) → id=${p.id}`);
-        return { id: p.id, name: p.name, image_url: p.image_url };
-    }
-
-    // 2) Fuzzy match against all existing promoters
-    const { data: allPromoters, error: allError } = await supabase
-        .from('promoters')
-        .select('id, name, image_url');
-    if (allError) throw allError;
-
-    if (allPromoters && allPromoters.length > 0) {
-        const names = allPromoters.map(p => p.name.toLowerCase());
-        const { bestMatch, bestMatchIndex } = stringSimilarity.findBestMatch(
-            normalizedName.toLowerCase(),
-            names
-        );
-        if (bestMatch.rating >= FUZZY_THRESHOLD) {
-            const p = allPromoters[bestMatchIndex];
-            console.log(
-                `➡️ Promoter "${promoterName}" similar to "${p.name}" → id=${p.id}`
-            );
-            return { id: p.id, name: p.name, image_url: p.image_url };
-        }
-    }
-
-    // 3) Insertion of a new promoter
-    console.log(`➡️ Inserting a new promoter "${promoterName}"…`);
-    const promoterSource = eventData.hosts.find(h => h.name === promoterName);
-    const newPromoterData = { name: normalizedName };
-
-    // try to get a high-resolution image via Facebook Graph
-    if (promoterSource?.id) {
-        const highRes = await fetchHighResImage(promoterSource.id);
-        if (highRes) newPromoterData.image_url = highRes;
-    }
-
-    // fallback to photo.imageUri if available
-    if (!newPromoterData.image_url && promoterSource?.photo?.imageUri) {
-        newPromoterData.image_url = promoterSource.photo.imageUri;
-    }
-
-    const { data: inserted, error: insertError } = await supabase
-        .from('promoters')
-        .insert(newPromoterData)
-        .select('id, name, image_url');
-    if (insertError || !inserted || inserted.length === 0) {
-        throw insertError || new Error('Promoter insertion failed');
-    }
-
-    const created = inserted[0];
-    console.log(
-        `✅ Promoter inserted: "${promoterName}" → id=${created.id}`
-    );
-    return {
-        id: created.id,
-        name: created.name,
-        image_url: created.image_url ?? null
-    };
-}
-
-// --- Manage Artists ---
-async function findOrInsertArtist(artistObj) {
-    // artistObj: { name, time, soundcloud, stage, performance_mode }
-    let artistName = (artistObj.name || '').trim();
-    if (!artistName) return null;
-
-    // 1. Name normalization
-    artistName = normalizeNameEnhanced(artistName);
-
-    // 2. Search on SoundCloud
-    const token = await getAccessToken();
-    let scArtist = null;
-    if (token) {
-        scArtist = await searchArtist(artistName, token);
-    }
-
-    // 3. Construction of the artistData object
-    let artistData;
-    if (scArtist) {
-        // If found on SC, extract enriched info
-        artistData = await extractArtistInfo(scArtist);
-    } else {
-        // Otherwise minimal fallback
-        artistData = {
-            name: artistName,
-            external_links: artistObj.soundcloud
-                ? { soundcloud: { link: artistObj.soundcloud } }
-                : null,
-        };
-    }
-    // --- Social link normalization ---
-    if (artistData.external_links) {
-        artistData.external_links = normalizeExternalLinks(artistData.external_links);
-    }
-
-    // 4. Duplicate detection via SoundCloud link
-    if (artistData.external_links?.soundcloud?.id) {
-        const { data: existingByExternal, error: extError } = await supabase
-            .from('artists')
-            .select('id')
-            .eq('external_links->soundcloud->>id', artistData.external_links.soundcloud.id);
-        if (extError) throw extError;
-        if (existingByExternal.length > 0) {
-            console.log(`➡️ Artist exists by external link: "${artistName}" (id=${existingByExternal[0].id})`);
-            return existingByExternal[0].id;
-        }
-    }
-
-    // 5. Duplicate detection via name
-    const { data: existingByName, error: nameError } = await supabase
-        .from('artists')
-        .select('id')
-        .ilike('name', artistName);
-    if (nameError) throw nameError;
-    if (existingByName.length > 0) {
-        console.log(`➡️ Artist exists by name: "${artistName}" (id=${existingByName[0].id})`);
-        return existingByName[0].id;
-    }
-
-    // 6. Insertion of the new artist
-    const { data: inserted, error: insertError } = await supabase
-        .from('artists')
-        .insert(artistData)
-        .select();
-    if (insertError || !inserted) throw insertError || new Error("Could not insert artist");
-    const newArtistId = inserted[0].id;
-    console.log(`✅ Artist inserted: "${artistName}" (id=${newArtistId})`);
-
-    // 7. Processing and linking genres
+async function fetchHighResImage(objectId) {
     try {
-        const genres = await processArtistGenres(artistData);
-        for (const genreObj of genres) {
-            if (genreObj.id) {
-                // ✨ DnB alias detected → direct link to the forced ID (437)
-                await linkArtistGenre(newArtistId, genreObj.id);
-                console.log(`   ↳ Linked artist to forced genre_id=${genreObj.id}`);
-            } else {
-                // Normal workflow for other genres
-                const genreId = await insertGenreIfNew(genreObj);
-                await linkArtistGenre(newArtistId, genreId);
-                console.log(`   ↳ Linked artist to genre_id=${genreId}`);
-            }
+        const response = await fetch(`https://graph.facebook.com/${objectId}?fields=picture.width(720).height(720)&access_token=${longLivedToken}`);
+        const data = await response.json();
+        if (data.picture && data.picture.data && data.picture.data.url) {
+            return data.picture.data.url;
         }
     } catch (err) {
-        console.error("❌ Error processing genres for artist:", artistName, err);
+        console.error("Error fetching high resolution image:", err);
     }
-
-    return newArtistId;
+    return null;
 }
 
-async function searchArtist(artistName, accessToken) {
-    try {
-        const url = `https://api.soundcloud.com/users?q=${encodeURIComponent(artistName)}&limit=1`;
-        const response = await fetch(url, {
-            headers: { "Authorization": `OAuth ${accessToken}` }
-        });
-        const data = await response.json();
-        if (!data || data.length === 0) {
-            console.log(`No SoundCloud artist found for: ${artistName}`);
-            return null;
-        }
-        return data[0];
-    } catch (error) {
-        console.error("Error searching for artist on SoundCloud:", error);
-        return null;
-    }
-}
-
-async function extractArtistInfo(artist) {
-    const bestImageUrl = await getBestImageUrl(artist.avatar_url);
-    return {
-        name: artist.username,
-        image_url: bestImageUrl,
-        description: artist.description,
-        location_info: {
-            country: artist.country || null,
-            city: artist.city || null
-        },
-        external_links: {
-            soundcloud: {
-                link: artist.permalink_url,
-                id: String(artist.id)
-            }
-        }
-    };
-}
-
-// --- Create event_artist relation (unchanged) ---
-async function createEventArtistRelation(eventId, artistId, artistObj) {
-    if (!artistId) return;
-    const artistIdStr = String(artistId);
-
-    let startTime = null;
-    let endTime = null;
-    const stage = artistObj.stage || null;
-    const customName = null;
-
-    if (artistObj.time && artistObj.time.trim() !== "") {
-        const match = artistObj.time.match(/(\d{1,2}:\d{2})-?(\d{1,2}:\d{2})?/);
-        if (match) {
-            const startStr = match[1];
-            const endStr = match[2] || null;
-            if (startStr) {
-                startTime = `2025-06-27T${startStr}:00`;
-            }
-            if (endStr) {
-                endTime = `2025-06-27T${endStr}:00`;
-            }
-        }
-    }
-
-    let query = supabase
-        .from('event_artist')
-        .select('*')
-        .eq('event_id', eventId);
-
-    if (stage === null) {
-        query = query.is('stage', null);
+async function ensureRelation(table, relationData, relationName) {
+    const { data, error } = await supabase
+        .from(table)
+        .select()
+        .match(relationData);
+    if (error) throw error;
+    if (!data || data.length === 0) {
+        const { error: insertError } = await supabase
+            .from(table)
+            .insert(relationData);
+        if (insertError) throw insertError;
+        console.log(`✅ ${relationName} relation created: ${JSON.stringify(relationData)}`);
     } else {
-        query = query.eq('stage', stage);
-    }
-    query = query.is('custom_name', null);
-    if (startTime === null) {
-        query = query.is('start_time', null);
-    } else {
-        query = query.eq('start_time', startTime);
-    }
-    if (endTime === null) {
-        query = query.is('end_time', null);
-    } else {
-        query = query.eq('end_time', endTime);
-    }
-    query = query.contains('artist_id', [artistIdStr]);
-
-    const { data: existing, error } = await query;
-    if (error) {
-        console.error("Error during existence check:", error);
-        throw error;
-    }
-    if (existing && existing.length > 0) {
-        console.log(`➡️ A row already exists for artist_id=${artistIdStr} with the same performance details.`);
-        return;
-    }
-
-    const row = {
-        event_id: eventId,
-        artist_id: [artistIdStr],
-        start_time: startTime,
-        end_time: endTime,
-        status: 'confirmed',
-        stage: stage,
-        custom_name: customName
-    };
-
-    const { data, error: insertError } = await supabase
-        .from('event_artist')
-        .insert(row)
-        .select();
-    if (insertError) {
-        console.error("Error creating event_artist relation:", insertError);
-    } else {
-        console.log(`➡️ Created event_artist relation for artist_id=${artistIdStr}`, data);
+        console.log(`➡️ ${relationName} relation already exists: ${JSON.stringify(relationData)}`);
     }
 }
 
@@ -956,33 +965,19 @@ async function main() {
         }
 
         // (1) Process promoters
-        // We replace `promoterIds` with `promoterInfos`, which will contain { id, name, image_url }
         const promoterInfos = [];
-
         for (const promoterName of promotersList) {
             if (!promoterName) continue;
-
-            console.log(`
-🔍 Processing promoter "${promoterName}"...`);
-
-            // Default value in DRY_RUN
+            console.log(`\n🔍 Processing promoter "${promoterName}"...`);
             let info = { id: null, name: promoterName, image_url: null };
-
             if (DRY_RUN) {
                 console.log(`(DRY_RUN) Would find/insert promoter: "${promoterName}"`);
             } else {
-                // findOrInsertPromoter now returns { id, name, image_url }
                 info = await findOrInsertPromoter(promoterName, eventData);
             }
-
             promoterInfos.push(info);
         }
-
-        // Unique declaration of promoterIds, accessible throughout the script
-        const promoterIds = promoterInfos
-            .map(p => p.id)
-            .filter(id => id);
-
+        const promoterIds = promoterInfos.map(p => p.id).filter(id => id);
 
         // (2) Process venue
         let venueId = null;
@@ -991,7 +986,6 @@ async function main() {
             const normalizedVenueName = getNormalizedName(venueName);
 
             if (!DRY_RUN) {
-                // 2A) Try find by exact address
                 let { data: venuesByAddress, error: vAddrError } = await supabase
                     .from('venues')
                     .select('id, location, name')
@@ -1002,7 +996,6 @@ async function main() {
                     venueId = venuesByAddress[0].id;
                     console.log(`➡️ Venue found by address: "${venueAddress}" (id=${venueId}).`);
                 } else {
-                    // 2B) Try find by exact name
                     let { data: venuesByName, error: vNameError } = await supabase
                         .from('venues')
                         .select('id, name, location')
@@ -1013,7 +1006,6 @@ async function main() {
                         venueId = venuesByName[0].id;
                         console.log(`➡️ Venue "${normalizedVenueName}" found by exact name (id=${venueId}).`);
                     } else {
-                        // 2C) Try fuzzy match against all venues
                         const { data: allVenues, error: allVenuesError } = await supabase
                             .from('venues')
                             .select('id, name, location');
@@ -1029,16 +1021,12 @@ async function main() {
                             venueId = match.id;
                             console.log(`➡️ Venue "${normalizedVenueName}" is similar to "${match.name}" (id=${venueId}).`);
                         } else {
-                            // 2D) Insert new venue
                             console.log(`➡️ No venue found for "${normalizedVenueName}". Inserting new venue...`);
-
-                            // 2D-1) Address normalization via Node-Geocoder
                             let standardizedAddress = venueAddress;
                             try {
                                 const geoResults = await geocoder.geocode(venueAddress);
                                 if (geoResults && geoResults.length > 0) {
                                     const g = geoResults[0];
-                                    // ad-hoc country mapping
                                     let country = g.country;
                                     if (country === 'België / Belgique / Belgien') {
                                         country = 'Belgium';
@@ -1061,9 +1049,7 @@ async function main() {
                             } catch (errNorm) {
                                 console.warn(`   ⚠️ Geocoding failed for "${venueAddress}": ${errNorm.message}`);
                             }
-                            // ─────────────────────────────────────────────────
 
-                            // 2D-2) Data preparation
                             const newVenueData = {
                                 name: normalizedVenueName,
                                 location: standardizedAddress,
@@ -1075,7 +1061,6 @@ async function main() {
                                 newVenueData.location_point = `SRID=4326;POINT(${venueLongitude} ${venueLatitude})`;
                             }
 
-                            // 2D-3) Copy the promoter's image if the names match
                             const normVenue = normalizeNameEnhanced(normalizedVenueName).toLowerCase();
                             const matchingPromo = promoterInfos.find(p =>
                                 p.image_url &&
@@ -1089,7 +1074,6 @@ async function main() {
                                 );
                             }
 
-                            // 2D-4) If still no image, try Google Maps
                             if (!newVenueData.image_url) {
                                 try {
                                     const photoUrl = await fetchGoogleVenuePhoto(venueName, venueAddress);
@@ -1100,7 +1084,6 @@ async function main() {
                                 }
                             }
 
-                            // 2D-5) Database insertion
                             const { data: newVenue, error: insertVenueError } = await supabase
                                 .from('venues')
                                 .insert(newVenueData)
@@ -1120,10 +1103,9 @@ async function main() {
             console.log("\nℹ️ No venue information to insert (online event or venue not specified).");
         }
 
-        // (3) Process event (check if exists then insert or update)
+        // (3) Process event
         console.log(`\n📝 Checking if event "${eventName}" already exists in the database...`);
         let eventId = null;
-
         if (!DRY_RUN) {
             // Search by URL
             const { data: eventsByUrl, error: eventsByUrlError } = await supabase
@@ -1324,7 +1306,7 @@ ${eventDescription}
             console.log("⚠️ No description found, skipping artist extraction.");
         }
 
-        // (6) Import and create event_artist relations for each artist
+        // (6) Import artists and create relations
         if (!DRY_RUN && eventId && parsedArtists.length > 0) {
             for (const artistObj of parsedArtists) {
                 const artistName = (artistObj.name || '').trim();
@@ -1336,23 +1318,22 @@ ${eventDescription}
                 try {
                     artistId = await findOrInsertArtist(artistObj);
                 } catch (e) {
-                    console.error(`Error finding/inserting artist "${artistName}":`, e);
-                    continue;
+                    console.error(`❌ Error processing artist "${artistName}":`, e);
                 }
                 try {
                     await createEventArtistRelation(eventId, artistId, artistObj);
                 } catch (e) {
-                    console.error("Error linking artist to event:", e);
+                    console.error(`❌ Error creating relation for artist "${artistName}":`, e);
                 }
             }
             console.log("✅ Completed full event import (with artists).");
         } else if (!DRY_RUN && parsedArtists.length === 0) {
             console.log("✅ Event import done. No artists found via OpenAI.");
         } else if (DRY_RUN) {
-            console.log("✅ DRY_RUN completed. (No actual writes to the DB.)");
+            console.log("(DRY_RUN) Would process artists:", parsedArtists);
         }
 
-        // --- (7) Post-processing: Deduce and assign event genres and promoter genres ---
+        // (7) Post-processing: Assign genres
         if (!DRY_RUN && eventId) {
             try {
                 await assignEventGenres(eventId);
@@ -1379,8 +1360,11 @@ ${eventDescription}
     }
 }
 
-// 4) Start
-main().catch(err => {
-    console.error("❌ Unhandled error:", err);
-    process.exit(1);
-});
+// Start script
+(async () => {
+    bannedGenreIds = await getBannedGenreIds();
+    await main().catch(err => {
+        console.error("❌ Unhandled error:", err);
+        process.exit(1);
+    });
+})();
