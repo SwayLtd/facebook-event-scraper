@@ -68,6 +68,63 @@ try {
     console.error("Error loading geocoding_exceptions.json:", err);
 }
 
+// --- Social Link Normalization Helpers (from updateArtistExternalLinks.js) ---
+const URL_REGEX = /\bhttps?:\/\/[^")\s'<>]+/gi;
+const HANDLE_REGEX = /(?:IG:?|Insta:?|Instagram:?|Twitter:?|TW:?|X:?|x:?|FB:?|Facebook:?|SC:?|SoundCloud:?|Wiki:?|Wikipedia:?|BandCamp:?|BC:?|@)([A-Za-z0-9._-]+)/gi;
+const VALID_ID = /^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?$/;
+
+function normalizeSocialLink(raw) {
+    const r = raw.trim();
+    // URL complète
+    if (/^https?:\/\//i.test(r)) {
+        let url;
+        try { url = new URL(r); } catch { return null; }
+        const host = url.hostname.replace(/^www\./i, '').toLowerCase();
+        const segments = url.pathname.split('/').filter(Boolean);
+        if (segments.length !== 1) return null;
+        const id = segments[0].toLowerCase();
+        if (!VALID_ID.test(id) || id.length < 2 || ['http', 'https'].includes(id)) return null;
+        let platform;
+        switch (host) {
+            case 'instagram.com': platform = 'instagram'; break;
+            case 'twitter.com':
+            case 'x.com': platform = 'x'; break;
+            case 'facebook.com': platform = 'facebook'; break;
+            case 'soundcloud.com': platform = 'soundcloud'; break;
+            default:
+                if (host.endsWith('.bandcamp.com')) platform = 'bandcamp';
+                else if (host.endsWith('.wikipedia.org')) platform = 'wikipedia';
+                else return null;
+        }
+        return { platform, link: `${url.protocol}//${url.hostname}/${segments[0]}` };
+    }
+    // Handle brut
+    if (/^https?:/i.test(r)) return null;
+    const prefixMatch = r.match(/^[A-Za-z]+(?=[:@]?)/);
+    const prefix = prefixMatch ? prefixMatch[0].toLowerCase() : '';
+    const id = r.replace(/^[A-Za-z]+[:@]?/i, '').trim().toLowerCase();
+    if (!VALID_ID.test(id) || id.length < 2) return null;
+    if (['instagram', 'insta', 'ig'].includes(prefix)) return { platform: 'instagram', link: `https://instagram.com/${id}` };
+    if (['twitter', 'tw', 'x'].includes(prefix)) return { platform: 'x', link: `https://x.com/${id}` };
+    if (['facebook', 'fb'].includes(prefix)) return { platform: 'facebook', link: `https://facebook.com/${id}` };
+    if (['soundcloud', 'sc'].includes(prefix)) return { platform: 'soundcloud', link: `https://soundcloud.com/${id}` };
+    if (['bandcamp', 'bc'].includes(prefix)) return { platform: 'bandcamp', link: `https://${id}.bandcamp.com` };
+    if (['wikipedia', 'wiki'].includes(prefix)) return { platform: 'wikipedia', link: `https://en.wikipedia.org/wiki/${encodeURIComponent(id.replace(/\s+/g, '_'))}` };
+    return null;
+}
+
+function normalizeExternalLinks(externalLinksObj) {
+    if (!externalLinksObj || typeof externalLinksObj !== 'object') return null;
+    const normalized = {};
+    for (const [platform, data] of Object.entries(externalLinksObj)) {
+        if (!data || !data.link) continue;
+        const norm = normalizeSocialLink(data.link);
+        if (norm) normalized[platform] = { ...data, link: norm.link };
+        else normalized[platform] = data;
+    }
+    return Object.keys(normalized).length > 0 ? normalized : null;
+}
+
 // --- Setup logs pour le fallback Google Maps ---
 const logsDir = path.join(process.cwd(), 'logs');
 if (!fs.existsSync(logsDir)) fs.mkdirSync(logsDir, { recursive: true });
@@ -877,6 +934,10 @@ async function findOrInsertArtist(artistObj) {
                 : null,
         };
     }
+    // --- Social link normalization ---
+    if (artistData.external_links) {
+        artistData.external_links = normalizeExternalLinks(artistData.external_links);
+    }
 
     // 4. Détection de doublons via lien SoundCloud
     if (artistData.external_links?.soundcloud?.id) {
@@ -1212,7 +1273,11 @@ async function main() {
                                         g.zipcode,
                                         country
                                     ].filter(Boolean).join(', ');
-                                    console.log(`   ↳ Adresse normalisée: "${standardizedAddress}"`);
+                                    if (standardizedAddress.length > 0) {
+                                        console.log(`✅ Adresse normalisée: "${standardizedAddress}"`);
+                                    } else {
+                                        console.warn(`⚠️ Géocoding partiel pour l'adresse: "${venueAddress}" → ${JSON.stringify(g)}`);
+                                    }
                                 } else {
                                     console.warn(`   ⚠️ Pas de résultat géocoding pour "${venueAddress}", on garde l’original.`);
                                 }
