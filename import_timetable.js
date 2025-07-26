@@ -1,5 +1,5 @@
 import { DateTime } from 'luxon';
-// --- Normalisation avancée du nom d'artiste (copié de importEvent.js) ---
+// --- Advanced artist name normalization (copied from importEvent.js) ---
 function normalizeNameEnhanced(name) {
     if (!name) return name;
     let normalized = name.normalize('NFD');
@@ -8,7 +8,7 @@ function normalizeNameEnhanced(name) {
     return normalized;
 }
 
-// --- Récupération d'image SoundCloud de haute qualité (copié de importEvent.js) ---
+// --- High-quality SoundCloud image retrieval (copied from importEvent.js) ---
 import fetch from 'node-fetch';
 async function getBestImageUrl(avatarUrl) {
     if (!avatarUrl) return avatarUrl;
@@ -28,18 +28,18 @@ async function getBestImageUrl(avatarUrl) {
 /**
  * import_timetable.js
  *
- * Script générique pour importer les artistes d'un festival
- * depuis le JSON formatté et les lier à SoundCloud
+ * Generic script to import festival artists
+ * from a formatted JSON and link them to SoundCloud.
  *
  * Usage:
- *   node import_timetable.js --event-url=https://www.facebook.com/events/xxx/ --json=mon_event.json
+ *   node import_timetable.js --event-url=https://www.facebook.com/events/xxx/ --json=my_event.json
  *
- * Ce script :
- * 1. Lit le JSON des artistes du festival
- * 2. Recherche chaque artiste sur SoundCloud
- * 3. Importe les données dans Supabase
- * 4. Crée l'événement Facebook et lie les artistes
- * 5. Log tous les résultats
+ * This script:
+ * 1. Reads the festival artists JSON
+ * 2. Searches for each artist on SoundCloud
+ * 3. Imports the data into Supabase
+ * 4. Creates the Facebook event and links the artists
+ * 5. Logs all results
  */
 
 import 'dotenv/config';
@@ -154,9 +154,9 @@ async function getAccessToken() {
  */
 async function searchSoundCloudArtist(artistName, accessToken) {
     try {
-        logMessage(`🎵 Recherche SoundCloud pour: "${artistName}"`);
+        logMessage(`🎵 SoundCloud search for: "${artistName}"`);
         const normName = normalizeNameEnhanced(artistName);
-        logMessage(`   └─ Nom normalisé pour recherche: "${normName}"`);
+        logMessage(`   └─ Normalized name for search: "${normName}"`);
 
         const response = await axios.get('https://api.soundcloud.com/users', {
             params: {
@@ -169,30 +169,30 @@ async function searchSoundCloudArtist(artistName, accessToken) {
         });
 
         if (response.data && response.data.length > 0) {
-            logMessage(`   └─ ${response.data.length} résultat(s) trouvé(s) sur SoundCloud`);
-            // --- Nouveau scoring composite ---
+            logMessage(`   └─ ${response.data.length} result(s) found on SoundCloud`);
+            // --- New composite scoring ---
             let bestMatch = null;
             let bestScore = 0;
             const maxFollowers = Math.max(...response.data.map(u => u.followers_count || 0), 1);
             response.data.forEach((user, idx) => {
                 const userNorm = normalizeNameEnhanced(user.username);
                 const nameScore = stringSimilarity.compareTwoStrings(normName.toLowerCase(), userNorm.toLowerCase());
-                // Followers: log pour écraser les extrêmes, normalisé [0,1]
+                // Followers: log to flatten extremes, normalized [0,1]
                 const followers = user.followers_count || 0;
                 const followersScore = Math.log10(followers + 1) / Math.log10(maxFollowers + 1);
-                // Bonus pour le premier résultat
-                const positionScore = 1 - (idx / response.data.length); // 1 pour le 1er, 0.9 pour le 2e, etc.
-                // Pondération : nom 60%, followers 30%, position 10%
+                // Bonus for the first result
+                const positionScore = 1 - (idx / response.data.length); // 1 for the 1st, 0.9 for the 2nd, etc.
+                // Weighting: name 60%, followers 30%, position 10%
                 const score = (nameScore * 0.6) + (followersScore * 0.3) + (positionScore * 0.1);
-                logMessage(`   └─ Candidat: "${user.username}" | nom: ${nameScore.toFixed(2)} | followers: ${followers} | scoreFollowers: ${followersScore.toFixed(2)} | pos: ${idx + 1} | score: ${score.toFixed(3)}`);
+                logMessage(`   └─ Candidate: "${user.username}" | name: ${nameScore.toFixed(2)} | followers: ${followers} | followersScore: ${followersScore.toFixed(2)} | pos: ${idx + 1} | score: ${score.toFixed(3)}`);
                 if (score > bestScore) {
                     bestScore = score;
                     bestMatch = user;
                 }
             });
             if (bestMatch && bestScore > 0.6) {
-                logMessage(`✅ Meilleure correspondance SoundCloud pour "${artistName}": ${bestMatch.username} (score: ${bestScore.toFixed(3)})`);
-                logMessage(`   └─ Profile SoundCloud: ${bestMatch.permalink_url}`);
+                logMessage(`✅ Best SoundCloud match for "${artistName}": ${bestMatch.username} (score: ${bestScore.toFixed(3)})`);
+                logMessage(`   └─ SoundCloud Profile: ${bestMatch.permalink_url}`);
                 const bestImageUrl = await getBestImageUrl(bestMatch.avatar_url);
                 return {
                     soundcloud_id: bestMatch.id,
@@ -202,15 +202,15 @@ async function searchSoundCloudArtist(artistName, accessToken) {
                     description: bestMatch.description,
                 };
             } else {
-                logMessage(`⚠️ Aucune correspondance suffisante trouvée pour "${artistName}" (meilleur score: ${bestScore.toFixed(3)})`);
+                logMessage(`⚠️ No sufficient match found for "${artistName}" (best score: ${bestScore.toFixed(3)})`);
             }
         } else {
-            logMessage(`   └─ Aucun résultat sur SoundCloud pour "${normName}"`);
+            logMessage(`   └─ No results on SoundCloud for "${normName}"`);
         }
-        logMessage(`❌ Pas de correspondance SoundCloud appropriée pour "${artistName}"`);
+        logMessage(`❌ No suitable SoundCloud match for "${artistName}"`);
         return null;
     } catch (error) {
-        logMessage(`❌ Erreur lors de la recherche SoundCloud pour "${artistName}": ${error.message}`);
+        logMessage(`❌ Error during SoundCloud search for "${artistName}": ${error.message}`);
         return null;
     }
 }
@@ -220,9 +220,9 @@ async function searchSoundCloudArtist(artistName, accessToken) {
  */
 async function insertOrUpdateArtist(artistData, soundCloudData = null) {
     try {
-        // Normalisation avancée du nom pour la recherche
+        // Advanced name normalization for search
         const normName = normalizeNameEnhanced(artistData.name);
-        // Check doublon par ID SoundCloud si dispo
+        // Check for duplicates by SoundCloud ID if available
         if (soundCloudData && soundCloudData.soundcloud_id) {
             const { data: existingByExternal, error: extError } = await supabase
                 .from('artists')
@@ -230,26 +230,26 @@ async function insertOrUpdateArtist(artistData, soundCloudData = null) {
                 .eq('external_links->soundcloud->>id', String(soundCloudData.soundcloud_id));
             if (extError) throw extError;
             if (existingByExternal && existingByExternal.length > 0) {
-                logMessage(`➡️ Artiste existant trouvé par SoundCloud ID: "${artistData.name}" (id=${existingByExternal[0].id})`);
+                logMessage(`➡️ Existing artist found by SoundCloud ID: "${artistData.name}" (id=${existingByExternal[0].id})`);
                 return { id: existingByExternal[0].id };
             }
         }
-        // Sinon, check doublon par nom (normalisé)
-        logMessage(`🔍 Vérification si l'artiste "${artistData.name}" existe déjà...`);
+        // Otherwise, check for duplicates by name (normalized)
+        logMessage(`🔍 Checking if artist "${artistData.name}" already exists...`);
         const { data: existingArtist, error: fetchError } = await supabase
             .from('artists')
             .select('id, name, external_links')
             .ilike('name', normName)
             .single();
         if (fetchError && fetchError.code !== 'PGRST116') {
-            logMessage(`❌ Erreur lors de la recherche d'artiste: ${fetchError.message}`);
+            logMessage(`❌ Error while searching for artist: ${fetchError.message}`);
             throw fetchError;
         }
         if (DRY_RUN) {
-            logMessage(`[DRY_RUN] Aurait inséré/mis à jour l'artiste: ${artistData.name}`);
+            logMessage(`[DRY_RUN] Would have inserted/updated artist: ${artistData.name}`);
             return { id: `dryrun_artist_${normName}` };
         }
-        // Prépare les liens externes SoundCloud pour JSONB
+        // Prepare SoundCloud external links for JSONB
         let external_links = existingArtist && existingArtist.external_links ? { ...existingArtist.external_links } : {};
         if (soundCloudData) {
             external_links.soundcloud = {
@@ -257,7 +257,7 @@ async function insertOrUpdateArtist(artistData, soundCloudData = null) {
                 id: String(soundCloudData.soundcloud_id)
             };
         }
-        // Construction de l'objet artiste enrichi
+        // Build the enriched artist object
         const artistRecord = {
             name: normName,
             image_url: soundCloudData ? soundCloudData.image_url : undefined,
@@ -265,7 +265,7 @@ async function insertOrUpdateArtist(artistData, soundCloudData = null) {
             external_links: Object.keys(external_links).length > 0 ? external_links : undefined
         };
         if (existingArtist) {
-            // Mise à jour
+            // Update
             const { data: updated, error: updateError } = await supabase
                 .from('artists')
                 .update(artistRecord)
@@ -290,10 +290,10 @@ async function insertOrUpdateArtist(artistData, soundCloudData = null) {
     }
 }
 
-// --- Recherche d'event générique ---
+// --- Generic event search ---
 async function findExistingEvent(eventUrl) {
     try {
-        logMessage(`Recherche de l'event dans la base via Facebook URL: ${eventUrl}`);
+        logMessage(`Searching for event in the database via Facebook URL: ${eventUrl}`);
         const { data: eventsByMetaUrl, error: metaUrlError } = await supabase
             .from('events')
             .select('id, title, metadata, date_time')
@@ -301,13 +301,13 @@ async function findExistingEvent(eventUrl) {
         if (metaUrlError) throw metaUrlError;
         if (eventsByMetaUrl && eventsByMetaUrl.length > 0) {
             const event = eventsByMetaUrl[0];
-            logMessage(`✅ Event trouvé: "${event.title}" (ID: ${event.id})`);
+            logMessage(`✅ Event found: "${event.title}" (ID: ${event.id})`);
             return event;
         }
-        logMessage("❌ Aucun event trouvé avec cette URL Facebook dans la base");
-        throw new Error("Event non trouvé dans la base. Crée-le d'abord !");
+        logMessage("❌ No event found with this Facebook URL in the database");
+        throw new Error("Event not found in the database. Create it first!");
     } catch (error) {
-        logMessage(`Erreur recherche event: ${error.message}`);
+        logMessage(`Error searching for event: ${error.message}`);
         throw error;
     }
 }
@@ -323,7 +323,7 @@ function extractStagesAndDaysFromPerformances(performances, timezone = 'Europe/B
     });
     const stages = Array.from(stagesSet).map(name => ({ name }));
 
-    // Détection automatique des jours effectifs avec gestion du fuseau horaire
+    // Automatic detection of effective days with timezone management
     function parseInZone(dateStr) {
         return DateTime.fromISO(dateStr, { zone: timezone });
     }
@@ -397,7 +397,7 @@ async function updateEventMetadata(event, newStages, newFestivalDays) {
     return metadata;
 }
 
-// --- Regroup B2B performances ---
+// --- Group B2B performances ---
 function groupPerformancesForB2B(jsonData) {
     // Key: stage|time|end_time|performance_mode
     const groups = {};
@@ -414,7 +414,7 @@ function groupPerformancesForB2B(jsonData) {
 async function linkArtistToEvent(eventId, artistIds, performanceData) {
     try {
         if (DRY_RUN) {
-            logMessage(`[DRY_RUN] Aurait lié les artistes ${artistIds.join(', ')} à l'event ${eventId} (stage: ${performanceData.stage}, time: ${performanceData.time}, end_time: ${performanceData.end_time})`);
+            logMessage(`[DRY_RUN] Would have linked artists ${artistIds.join(', ')} to event ${eventId} (stage: ${performanceData.stage}, time: ${performanceData.time}, end_time: ${performanceData.end_time})`);
             return { id: `dryrun_link_${artistIds.join('_')}_${eventId}` };
         }
         const artistIdStrs = artistIds.map(String);
@@ -465,7 +465,7 @@ async function linkArtistToEvent(eventId, artistIds, performanceData) {
             stage: performanceData.stage || null,
             custom_name: performanceData.custom_name || null,
             created_at: new Date().toISOString(),
-            // ... pas de updated_at ...
+            // ... no updated_at ...
         };
         const { data, error } = await supabase
             .from('event_artist')
@@ -481,7 +481,7 @@ async function linkArtistToEvent(eventId, artistIds, performanceData) {
     }
 }
 
-// --- Gestion des arguments CLI ---
+// --- CLI argument handling ---
 import process from 'node:process';
 
 function parseArgs() {
@@ -504,34 +504,34 @@ function parseArgs() {
 async function main() {
     const { eventUrl, jsonFilePath } = parseArgs();
     if (!eventUrl || !jsonFilePath) {
-        console.error('Usage: node import_dour_2025.js --event-url=<facebook_event_url> --json=<path_to_json>');
+        console.error('Usage: node import_timetable.js --event-url=<facebook_event_url> --json=<path_to_json>');
         process.exit(1);
     }
-    // Définir le fuseau horaire par défaut
+    // Set default timezone
     const timezone = 'Europe/Brussels';
     try {
         logMessage(`=== Starting Event Import${DRY_RUN ? ' (DRY_RUN MODE)' : ''} ===`);
         if (!fs.existsSync(jsonFilePath)) {
             throw new Error(`JSON file not found: ${jsonFilePath}`);
         }
-        logMessage(`[INFO] Fuseau horaire utilisé pour l'import : ${timezone}`);
+        logMessage(`[INFO] Timezone used for import: ${timezone}`);
         const jsonData = JSON.parse(fs.readFileSync(jsonFilePath, 'utf8'));
         logMessage(`Loaded ${jsonData.length} artist performances from JSON`);
         const accessToken = await getAccessToken();
-        logMessage("Recherche de l'event dans la base...");
-        // Patch: passer eventUrl à findExistingEvent
+        logMessage("Searching for the event in the database...");
+        // Patch: pass eventUrl to findExistingEvent
         const event = await findExistingEvent(eventUrl);
-        // --- Enrichir metadata event ---
+        // --- Enrich event metadata ---
         const { stages, festival_days } = extractStagesAndDaysFromPerformances(jsonData, timezone);
         await updateEventMetadata(event, stages, festival_days);
-        // --- Statistiques avancées ---
+        // --- Advanced statistics ---
         const uniqueArtists = new Set();
         const artistPerformances = {};
         const stagesSet = new Set();
         const performanceModes = new Set();
         const timeSlots = {};
         let withSoundCloud = 0;
-        // Remplir les stats à partir du JSON brut (avant B2B)
+        // Fill stats from raw JSON (before B2B)
         for (const perf of jsonData) {
             const artistName = perf.name.trim();
             uniqueArtists.add(artistName);
@@ -545,7 +545,7 @@ async function main() {
             }
             if (perf.soundcloud && perf.soundcloud.trim()) withSoundCloud++;
         }
-        // --- Gestion B2B ---
+        // --- B2B Management ---
         const groupedPerformances = groupPerformancesForB2B(jsonData);
         const artistNameToId = {};
         let processedCount = 0;
@@ -556,7 +556,7 @@ async function main() {
             const artistIds = [];
             const artistNames = [];
             for (const perf of group) {
-                // Conversion des dates en UTC pour la base
+                // Convert dates to UTC for the database
                 if (perf.time) {
                     perf.time = toUtcIso(perf.time, timezone);
                 }
@@ -589,68 +589,68 @@ async function main() {
         logMessage(`Found on SoundCloud: ${soundCloudFoundCount}`);
         logMessage(`SoundCloud success rate: ${((soundCloudFoundCount / successCount) * 100).toFixed(1)}%`);
         logMessage(`Event: ${event.title || event.name} (ID: ${event.id})`);
-        // --- Statistiques détaillées ---
-        logMessage(`\n📊 Statistiques détaillées:`);
-        logMessage(`   Total des performances: ${jsonData.length}`);
-        logMessage(`   Artistes uniques: ${uniqueArtists.size}`);
-        // Scènes
-        logMessage(`\n🎪 Scènes (${stagesSet.size}):`);
+        // --- Detailed statistics ---
+        logMessage(`\n📊 Detailed statistics:`);
+        logMessage(`   Total performances: ${jsonData.length}`);
+        logMessage(`   Unique artists: ${uniqueArtists.size}`);
+        // Stages
+        logMessage(`\n🎪 Stages (${stagesSet.size}):`);
         Array.from(stagesSet).sort().forEach(stage => {
             const count = jsonData.filter(p => p.stage === stage).length;
             logMessage(`   • ${stage}: ${count} performances`);
         });
-        // Modes de performance
+        // Performance modes
         if (performanceModes.size > 0) {
-            logMessage(`\n🎭 Modes de performance:`);
+            logMessage(`\n🎭 Performance modes:`);
             Array.from(performanceModes).forEach(mode => {
                 const count = jsonData.filter(p => p.performance_mode === mode).length;
                 logMessage(`   • ${mode}: ${count} performances`);
             });
         }
-        // Artistes avec plusieurs performances
+        // Artists with multiple performances
         const multiplePerformances = Object.entries(artistPerformances)
             .filter(([_, performances]) => performances.length > 1)
             .sort((a, b) => b[1].length - a[1].length);
         if (multiplePerformances.length > 0) {
-            logMessage(`\n🔄 Artistes avec plusieurs performances (${multiplePerformances.length}):`);
+            logMessage(`\n🔄 Artists with multiple performances (${multiplePerformances.length}):`);
             multiplePerformances.slice(0, 10).forEach(([artist, performances]) => {
                 logMessage(`   • ${artist}: ${performances.length} performances`);
                 performances.forEach(p => {
-                    logMessage(`     - ${p.stage} à ${p.time} (${p.end_time})`);
+                    logMessage(`     - ${p.stage} at ${p.time} (${p.end_time})`);
                 });
             });
             if (multiplePerformances.length > 10) {
-                logMessage(`   ... et ${multiplePerformances.length - 10} autres`);
+                logMessage(`   ... and ${multiplePerformances.length - 10} others`);
             }
         }
-        // Répartition par heure
-        logMessage(`\n⏰ Répartition par heure:`);
+        // Distribution by hour
+        logMessage(`\n⏰ Distribution by hour:`);
         Object.entries(timeSlots)
             .sort((a, b) => parseInt(a[0]) - parseInt(b[0]))
             .forEach(([hour, count]) => {
                 const bar = '█'.repeat(Math.ceil(count / 2));
                 logMessage(`   ${hour}h: ${count.toString().padStart(2)} ${bar}`);
             });
-        // Liens SoundCloud déjà renseignés
-        logMessage(`\n🎵 Liens SoundCloud:`);
-        logMessage(`   Déjà renseignés: ${withSoundCloud}/${jsonData.length} (${((withSoundCloud / jsonData.length) * 100).toFixed(1)}%)`);
-        // Échantillon d'artistes
-        logMessage(`\n📝 Échantillon d'artistes:`);
+        // SoundCloud links already provided
+        logMessage(`\n🎵 SoundCloud Links:`);
+        logMessage(`   Already provided: ${withSoundCloud}/${jsonData.length} (${((withSoundCloud / jsonData.length) * 100).toFixed(1)}%)`);
+        // Artist sample
+        logMessage(`\n📝 Artist Sample:`);
         const sampleArtists = Array.from(uniqueArtists).slice(0, 10);
         sampleArtists.forEach((artist, index) => {
             logMessage(`   ${index + 1}. ${artist}`);
         });
         if (uniqueArtists.size > 10) {
-            logMessage(`   ... et ${uniqueArtists.size - 10} autres artistes`);
+            logMessage(`   ... and ${uniqueArtists.size - 10} other artists`);
         }
-        logMessage(`\n✅ Analyse statistique terminée.`);
+        logMessage(`\n✅ Statistical analysis complete.`);
         if (DRY_RUN) {
-            logMessage(`\n[DRY_RUN] Nombre de liens artistes-event simulés: ${dryRunLinks.length}`);
+            logMessage(`\n[DRY_RUN] Number of simulated artist-event links: ${dryRunLinks.length}`);
             dryRunLinks.slice(0, 10).forEach(l => {
-                logMessage(`[DRY_RUN] Exemple: ${l.artists.join(' & ')} sur scène ${l.performance.stage} à ${l.performance.time}`);
+                logMessage(`[DRY_RUN] Example: ${l.artists.join(' & ')} on stage ${l.performance.stage} at ${l.performance.time}`);
             });
             if (dryRunLinks.length > 10) {
-                logMessage(`[DRY_RUN] ...et ${dryRunLinks.length - 10} autres liens simulés.`);
+                logMessage(`[DRY_RUN] ...and ${dryRunLinks.length - 10} other simulated links.`);
             }
         }
         logMessage("=== Import Complete ===");
@@ -660,13 +660,13 @@ async function main() {
     }
 }
 
-// --- Appel auto si exécuté en CLI ---
-if (process.argv[1] && process.argv[1].replace(/\\/g, '/').endsWith('import_dour_2025.js')) {
+// --- Auto-call if executed from CLI ---
+if (process.argv[1] && process.argv[1].replace(/\\/g, '/').endsWith('import_timetable.js')) {
     main();
 }
-// ...fin patch...
+// ...end patch...
 
-// --- Appel auto à main() si exécuté directement ---
+// --- Auto-call main() if executed directly ---
 if (process.argv[1] && process.argv[1].endsWith('import_timetable.js')) {
     main();
 }
