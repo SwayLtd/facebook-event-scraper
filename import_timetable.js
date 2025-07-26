@@ -1,6 +1,6 @@
 import { DateTime } from 'luxon';
 // --- Normalisation avancée du nom d'artiste (copié de importEvent.js) ---
-function normalizeArtistNameEnhanced(name) {
+function normalizeNameEnhanced(name) {
     if (!name) return name;
     let normalized = name.normalize('NFD');
     normalized = normalized.replace(/[\u0300-\u036f]/g, "");
@@ -155,7 +155,7 @@ async function getAccessToken() {
 async function searchSoundCloudArtist(artistName, accessToken) {
     try {
         logMessage(`🎵 Recherche SoundCloud pour: "${artistName}"`);
-        const normName = normalizeArtistNameEnhanced(artistName);
+        const normName = normalizeNameEnhanced(artistName);
         logMessage(`   └─ Nom normalisé pour recherche: "${normName}"`);
 
         const response = await axios.get('https://api.soundcloud.com/users', {
@@ -175,7 +175,7 @@ async function searchSoundCloudArtist(artistName, accessToken) {
             let bestScore = 0;
             const maxFollowers = Math.max(...response.data.map(u => u.followers_count || 0), 1);
             response.data.forEach((user, idx) => {
-                const userNorm = normalizeArtistNameEnhanced(user.username);
+                const userNorm = normalizeNameEnhanced(user.username);
                 const nameScore = stringSimilarity.compareTwoStrings(normName.toLowerCase(), userNorm.toLowerCase());
                 // Followers: log pour écraser les extrêmes, normalisé [0,1]
                 const followers = user.followers_count || 0;
@@ -221,7 +221,7 @@ async function searchSoundCloudArtist(artistName, accessToken) {
 async function insertOrUpdateArtist(artistData, soundCloudData = null) {
     try {
         // Normalisation avancée du nom pour la recherche
-        const normName = normalizeArtistNameEnhanced(artistData.name);
+        const normName = normalizeNameEnhanced(artistData.name);
         // Check doublon par ID SoundCloud si dispo
         if (soundCloudData && soundCloudData.soundcloud_id) {
             const { data: existingByExternal, error: extError } = await supabase
