@@ -259,16 +259,34 @@ async function getBestImageUrl(avatarUrl) {
     if (!avatarUrl) return avatarUrl;
     if (!avatarUrl.includes('-large')) return avatarUrl;
     const t500Url = avatarUrl.replace('-large', '-t500x500');
-    try {
-        const response = await fetch(t500Url, { method: 'HEAD' });
-        if (response.status === 200) {
-            return t500Url;
-        } else {
+    let retryCount = 0;
+    while (retryCount < 3) {
+        try {
+            const response = await fetch(t500Url, { method: 'HEAD' });
+            if (response.status === 200) {
+                return t500Url;
+            } else if (response.status === 429) {
+                // Rate limit reached, wait 60s and retry (max 3 tries)
+                console.warn('[getBestImageUrl] Rate limit reached for SoundCloud image. Waiting 60s before retry...');
+                await new Promise(resolve => setTimeout(resolve, 60000));
+                retryCount++;
+                continue;
+            } else {
+                return avatarUrl;
+            }
+        } catch (error) {
+            // If error is a rate limit, retry
+            if (error && error.status === 429) {
+                console.warn('[getBestImageUrl] Rate limit error (exception). Waiting 60s before retry...');
+                await new Promise(resolve => setTimeout(resolve, 60000));
+                retryCount++;
+                continue;
+            }
             return avatarUrl;
         }
-    } catch (error) {
-        return avatarUrl;
+        break;
     }
+    return avatarUrl;
 }
 
 // --- Ensure relation in a pivot table (unchanged) ---
