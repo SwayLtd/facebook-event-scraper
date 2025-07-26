@@ -25,7 +25,7 @@ const googleApiKey = process.env.GOOGLE_API_KEY;      // Google Maps API key
 const openAIApiKey = process.env.OPENAI_API_KEY;      // OpenAI key
 const SOUND_CLOUD_CLIENT_ID = process.env.SOUND_CLOUD_CLIENT_ID;
 const SOUND_CLOUD_CLIENT_SECRET = process.env.SOUND_CLOUD_CLIENT_SECRET;
-const LASTFM_API_KEY = process.env.LASTFM_API_KEY;    // Pour valider les tags/genres via Last.fm
+const LASTFM_API_KEY = process.env.LASTFM_API_KEY;    // To validate tags/genres via Last.fm
 const TOKEN_URL = 'https://api.soundcloud.com/oauth2/token';
 
 const geocoder = NodeGeocoder({
@@ -75,7 +75,7 @@ const VALID_ID = /^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?$/;
 
 function normalizeSocialLink(raw) {
     const r = raw.trim();
-    // URL complète
+    // Full URL
     if (/^https?:\/\//i.test(r)) {
         let url;
         try { url = new URL(r); } catch { return null; }
@@ -98,7 +98,7 @@ function normalizeSocialLink(raw) {
         }
         return { platform, link: `${url.protocol}//${url.hostname}/${segments[0]}` };
     }
-    // Handle brut
+    // Raw handle
     if (/^https?:/i.test(r)) return null;
     const prefixMatch = r.match(/^[A-Za-z]+(?=[:@]?)/);
     const prefix = prefixMatch ? prefixMatch[0].toLowerCase() : '';
@@ -125,7 +125,7 @@ function normalizeExternalLinks(externalLinksObj) {
     return Object.keys(normalized).length > 0 ? normalized : null;
 }
 
-// --- Setup logs pour le fallback Google Maps ---
+// --- Setup logs for Google Maps fallback ---
 const logsDir = path.join(process.cwd(), 'logs');
 if (!fs.existsSync(logsDir)) fs.mkdirSync(logsDir, { recursive: true });
 const imageLogFile = path.join(logsDir, 'syncVenueImages.log');
@@ -143,52 +143,52 @@ function getNormalizedName(originalName) {
 }
 
 /*
- * Normalisation améliorée du nom d'artiste.
- * Supprime les caractères non alphanumériques situés au début ou à la fin,
- * sans retirer les symboles présents à l'intérieur (ex: "SANTØS" reste inchangé,
- * alors que "☆ fumi ☆" devient "fumi").
+ * Enhanced artist name normalization.
+ * Removes non-alphanumeric characters from the beginning or end,
+ * without removing symbols inside (e.g., "SANTØS" remains unchanged,
+ * while "☆ fumi ☆" becomes "fumi").
  */
 function normalizeNameEnhanced(name) {
     if (!name) return name;
-    // Séparer les lettres des diacritiques
+    // Separate letters from diacritics
     let normalized = name.normalize('NFD');
-    // Supprimer les marques diacritiques
+    // Remove diacritical marks
     normalized = normalized.replace(/[\u0300-\u036f]/g, "");
-    // Supprimer les caractères non alphanumériques en début et fin de chaîne
+    // Remove non-alphanumeric characters at the beginning and end of the string
     normalized = normalized.replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, "");
     return normalized;
 }
 
 /**
- * Récupère l’URL d’une photo Google Places pour une adresse donnée.
+ * Retrieves the URL of a Google Places photo for a given address.
  */
 async function fetchGoogleVenuePhoto(name, address) {
-    // géocodage Google Maps
+    // Google Maps geocoding
     const geoRes = await fetch(
         `https://maps.googleapis.com/maps/api/geocode/json?address=${encodeURIComponent(address)}&key=${process.env.GOOGLE_API_KEY}`
     );
     const geoJson = await geoRes.json();
-    if (!geoJson.results?.length) throw new Error('Aucun résultat geocoding');
+    if (!geoJson.results?.length) throw new Error('No geocoding results');
     const { lat, lng } = geoJson.results[0].geometry.location;
 
-    // findPlaceFromText pour obtenir place_id
+    // findPlaceFromText to get place_id
     const findRes = await fetch(
         `https://maps.googleapis.com/maps/api/place/findplacefromtext/json` +
         `?input=${encodeURIComponent(name + ' ' + address)}` +
         `&inputtype=textquery&fields=place_id&key=${process.env.GOOGLE_API_KEY}`
     );
     const findJson = await findRes.json();
-    if (!findJson.candidates?.length) throw new Error('Aucun place_id trouvé');
+    if (!findJson.candidates?.length) throw new Error('No place_id found');
     const placeId = findJson.candidates[0].place_id;
 
-    // détails pour récupérer photo_reference
+    // details to get photo_reference
     const detailRes = await fetch(
         `https://maps.googleapis.com/maps/api/place/details/json` +
         `?place_id=${placeId}&fields=photos&key=${process.env.GOOGLE_API_KEY}`
     );
     const detailJson = await detailRes.json();
     const photoRef = detailJson.result.photos?.[0]?.photo_reference;
-    if (!photoRef) throw new Error('Pas de photo disponible');
+    if (!photoRef) throw new Error('No photo available');
 
     return `https://maps.googleapis.com/maps/api/place/photo?maxwidth=800&photoreference=${photoRef}&key=${process.env.GOOGLE_API_KEY}`;
 }
@@ -202,8 +202,8 @@ const openai = new OpenAI({ apiKey: openAIApiKey });
 // --- SoundCloud Token Management ---
 const TOKEN_FILE = 'soundcloud_token.json';
 
-// Charger en mémoire les IDs des genres bannis
-// Après avoir instancié `supabase = createClient(...)` :
+// Load banned genre IDs into memory
+// After instantiating `supabase = createClient(...)`:
 const { data: bannedGenreRecords, error: bannedError } = await supabase
     .from('genres')
     .select('id')
@@ -367,7 +367,7 @@ async function ensureRelation(table, relationData, relationName) {
 // --- Additional Functions for Genre Management ---
 
 /**
- * Récupère les tracks d'un artiste depuis SoundCloud, en se basant sur l'ID SoundCloud.
+ * Fetches artist tracks from SoundCloud based on the SoundCloud user ID.
  */
 async function fetchArtistTracks(soundcloudUserId, token) {
     try {
@@ -389,15 +389,15 @@ async function fetchArtistTracks(soundcloudUserId, token) {
 }
 
 /**
- * Fonction utilitaire pour capitaliser chaque mot d'une chaîne.
- * Exemple : "hard techno" -> "Hard Techno"
+ * Utility function to capitalize each word in a string.
+ * Example: "hard techno" -> "Hard Techno"
  */
 function capitalizeWords(str) {
     return str.replace(/\w\S*/g, (txt) => txt.charAt(0).toUpperCase() + txt.substr(1).toLowerCase());
 }
 
 /**
- * Sépare un tag composé contenant des délimiteurs connus (" x ", " & ", " + ") en sous-tags.
+ * Splits a compound tag containing known delimiters (" x ", " & ", " + ") into sub-tags.
  */
 function splitCompoundTags(tag) {
     const delimiters = [" x ", " & ", " + "];
@@ -411,31 +411,31 @@ function splitCompoundTags(tag) {
 
 
 /**
- * Nettoie une description en retirant les balises HTML, la partie "Read more on Last.fm",
- * et supprime un éventuel " ." en fin de chaîne.
- * Si, après nettoyage, la description est trop courte (moins de 30 caractères), retourne "".
+ * Cleans a description by removing HTML tags, the "Read more on Last.fm" part,
+ * and removes a possible " ." at the end of the string.
+ * If, after cleaning, the description is too short (less than 30 characters), returns "".
  */
 function cleanDescription(desc) {
     if (!desc) return "";
-    // 1. Supprimer toutes les balises HTML
+    // 1. Remove all HTML tags
     let text = desc.replace(/<[^>]*>/g, '').trim();
-    // 2. Retirer "Read more on Last.fm"
+    // 2. Remove "Read more on Last.fm"
     text = text.replace(/read more on last\.fm/gi, '').trim();
-    // 3. Supprimer un résidu " ." en fin de description
+    // 3. Remove a residual " ." at the end of the description
     text = text.replace(/\s+\.\s*$/, '');
-    // 4. Vérifier la longueur minimale
+    // 4. Check minimum length
     return text.length < 30 ? "" : text;
 }
 
 /**
- * Vérifie via Last.fm si le tag correspond à un genre musical.
- * Retourne { valid, name, description, lastfmUrl }.
- * n’autorise que si la description contient "genre" ou "sub-genre"/"subgenre"
- * ou "<nom> music", et rejette si elle contient "umbrella term"
- * ou si le nom est une seule lettre.
+ * Checks via Last.fm if the tag corresponds to a musical genre.
+ * Returns { valid, name, description, lastfmUrl }.
+ * Only allows if the description contains "genre" or "sub-genre"/"subgenre"
+ * or "<name> music", and rejects if it contains "umbrella term"
+ * or if the name is a single letter.
  */
 async function verifyGenreWithLastFM(tagName) {
-    // rejeter noms à une seule lettre
+    // reject single-letter names
     if (tagName.length === 1) {
         return { valid: false };
     }
@@ -446,7 +446,7 @@ async function verifyGenreWithLastFM(tagName) {
         const data = await response.json();
         if (!data?.tag) return { valid: false };
 
-        // Nettoyage initial et extraction du résumé
+        // Initial cleaning and summary extraction
         const rawSummary = data.tag.wiki?.summary || "";
         const description = cleanDescription(rawSummary);
         if (!description) return { valid: false };
@@ -454,7 +454,7 @@ async function verifyGenreWithLastFM(tagName) {
         const lowerDesc = description.toLowerCase();
         const lowerTag = tagName.toLowerCase();
 
-        // Conditions d'acceptation
+        // Acceptance conditions
         const hasGenreWord = /(genre|sub-genre|subgenre)/.test(lowerDesc);
         const hasMusicPhrase = new RegExp(`${lowerTag}\\s+music`).test(lowerDesc);
         const isUmbrella = /umbrella term/.test(lowerDesc);
@@ -463,7 +463,7 @@ async function verifyGenreWithLastFM(tagName) {
             return { valid: false };
         }
 
-        // Extraction de l’URL du tag
+        // Extraction of the tag URL
         let lastfmUrl = data.tag.url || "";
         const linkMatch = rawSummary.match(/<a href="([^"]+)"/);
         if (linkMatch?.[1]) lastfmUrl = linkMatch[1];
@@ -483,43 +483,43 @@ async function verifyGenreWithLastFM(tagName) {
 /**
  * refineGenreName
  *
- * Cette fonction prend en paramètre un nom de genre (tel que récupéré depuis Last.fm ou une autre source)
- * et le reformate pour un affichage plus lisible. Elle applique d'abord une capitalisation mot par mot,
- * puis détecte et corrige certains cas particuliers (par exemple, si le nom ne contient pas d'espaces et contient
- * le mot "techno", elle insère un espace avant "Techno"). Ce raffinement permet d'obtenir des noms de genre tels que
- * "Hard Techno" au lieu de "Hardtechno" pour une meilleure clarté visuelle et une uniformité dans la base de données.
+ * This function takes a genre name (as retrieved from Last.fm or another source)
+ * and reformats it for more readable display. It first applies word-by-word capitalization,
+ * then detects and corrects certain special cases (for example, if the name does not contain spaces and contains
+ * the word "techno", it inserts a space before "Techno"). This refinement allows for genre names such as
+ * "Hard Techno" instead of "Hardtechno" for better visual clarity and uniformity in the database.
  *
- * @param {string} name - Le nom de genre à raffiner.
- * @returns {string} - Le nom de genre reformatté pour affichage (ex. "Hard Techno").
+ * @param {string} name - The genre name to refine.
+ * @returns {string} - The reformatted genre name for display (e.g., "Hard Techno").
  */
 function refineGenreName(name) {
-    // Par défaut, on applique la capitalisation mot par mot
+    // By default, apply word-by-word capitalization
     let refined = name.replace(/\w\S*/g, (txt) => txt.charAt(0).toUpperCase() + txt.substr(1).toLowerCase());
 
-    // Exemple de raffinement pour "techno" :
-    // Si le nom ne contient pas d'espace mais inclut "techno", on insère un espace avant "Techno"
+    // Example of refinement for "techno":
+    // If the name does not contain a space but includes "techno", insert a space before "Techno"
     if (!refined.includes(' ') && /techno/i.test(refined)) {
         refined = refined.replace(/(.*)(techno)$/i, (match, p1, p2) => {
             return p1.trim() + " " + p2.charAt(0).toUpperCase() + p2.slice(1).toLowerCase();
         });
     }
-    // Vous pouvez ajouter d'autres conditions si nécessaire.
+    // You can add other conditions if necessary.
 
     return refined;
 }
 
 /**
- * Insère le genre dans la table "genres" s'il n'existe pas déjà.
- * D'abord, on vérifie via l'URL dans external_links ; si rien n'est trouvé, on vérifie par nom.
- * Retourne l'ID du genre.
+ * Inserts the genre into the "genres" table if it does not already exist.
+ * First, it checks via the URL in external_links; if nothing is found, it checks by name.
+ * Returns the genre ID.
  */
 async function insertGenreIfNew(genreObject) {
     const { name, description, lastfmUrl } = genreObject;
-    // On travaille ici avec le nom original pour le raffinement
+    // We work here with the original name for refinement
     const normalizedName = name.toLowerCase();
     const genreSlug = slugifyGenre(normalizedName);
 
-    // Récupérer tous les genres existants (pour détecter un doublon par slug ou external link)
+    // Get all existing genres (to detect a duplicate by slug or external link)
     let { data: existingGenres, error: selectError } = await supabase
         .from('genres')
         .select('id, name, external_links');
@@ -529,13 +529,13 @@ async function insertGenreIfNew(genreObject) {
     }
 
     let duplicateGenre = null;
-    // Vérification par external_links si disponible
+    // Check by external_links if available
     if (lastfmUrl) {
         duplicateGenre = existingGenres.find(g => g.external_links &&
             g.external_links.lastfm &&
             g.external_links.lastfm.link === lastfmUrl);
     }
-    // Sinon, vérification par le slug du nom
+    // Otherwise, check by the name's slug
     if (!duplicateGenre) {
         duplicateGenre = existingGenres.find(g => slugifyGenre(g.name) === genreSlug);
     }
@@ -548,7 +548,7 @@ async function insertGenreIfNew(genreObject) {
     if (lastfmUrl) {
         externalLinks = { lastfm: { link: lastfmUrl } };
     }
-    // Utilisation de refineGenreName pour obtenir le titre affiché souhaité
+    // Use refineGenreName to get the desired display title
     const finalName = refineGenreName(name);
     const { data: newGenre, error: insertError } = await supabase
         .from('genres')
@@ -563,7 +563,7 @@ async function insertGenreIfNew(genreObject) {
 }
 
 /**
- * Lie un artiste à un genre dans la table pivot "artist_genre".
+ * Links an artist to a genre in the "artist_genre" pivot table.
  */
 async function linkArtistGenre(artistId, genreId) {
     const { data, error } = await supabase
@@ -583,8 +583,8 @@ async function linkArtistGenre(artistId, genreId) {
 }
 
 /**
- * Extrait et normalise les tags d'un track.
- * On se base sur le champ "genre" et "tag_list". Renvoie un tableau de tags en minuscules.
+ * Extracts and normalizes tags from a track.
+ * It uses the "genre" and "tag_list" fields. Returns an array of lowercase tags.
  */
 function extractTagsFromTrack(track) {
     let tags = [];
@@ -605,19 +605,19 @@ function extractTagsFromTrack(track) {
 }
 
 function slugifyGenre(name) {
-    // Supprime tous les caractères non alphanumériques pour obtenir une version condensée.
+    // Removes all non-alphanumeric characters to get a condensed version.
     return name.replace(/\W/g, "").toLowerCase();
 }
 
 /**
- * Pour un artiste, utilise l'API SoundCloud pour récupérer ses tracks,
- * extrait les tags et vérifie via Last.fm lesquels correspondent à des genres musicaux.
- * Retourne un tableau d'objets genre validés.
+ * For an artist, uses the SoundCloud API to retrieve their tracks,
+ * extracts the tags, and checks via Last.fm which ones correspond to musical genres.
+ * Returns an array of validated genre objects.
  */
 async function processArtistGenres(artistData) {
     const genresFound = [];
 
-    // 1) Vérifier que l'artiste a bien un lien SoundCloud
+    // 1) Check that the artist has a SoundCloud link
     if (
         !artistData.external_links ||
         !artistData.external_links.soundcloud ||
@@ -627,7 +627,7 @@ async function processArtistGenres(artistData) {
         return genresFound;
     }
 
-    // 2) Récupérer les tracks
+    // 2) Get the tracks
     const soundcloudUserId = artistData.external_links.soundcloud.id;
     const token = await getAccessToken();
     if (!token) {
@@ -636,7 +636,7 @@ async function processArtistGenres(artistData) {
     }
     const tracks = await fetchArtistTracks(soundcloudUserId, token);
 
-    // 3) Extraire et dédupliquer tous les tags
+    // 3) Extract and deduplicate all tags
     let allTags = [];
     for (const track of tracks) {
         const tags = extractTagsFromTrack(track);
@@ -654,11 +654,11 @@ async function processArtistGenres(artistData) {
         'drumandbass': 437,
     };
 
-    // 5) Parcourir chaque tag
+    // 5) Go through each tag
     for (const rawTag of allTags) {
         const tag = rawTag.toLowerCase().trim();
 
-        // 5a) Si alias, forcer l'ID 437
+        // 5a) If alias, force ID 437
         if (aliasTagIds[tag]) {
             const id = aliasTagIds[tag];
             console.log(`[Genres] Alias DnB detected ("${tag}") → forcing genre_id ${id}`);
@@ -668,7 +668,7 @@ async function processArtistGenres(artistData) {
             continue;
         }
 
-        // 5b) Sinon, validation via Last.fm
+        // 5b) Otherwise, validation via Last.fm
         console.log(`[Genres] Verifying "${tag}" via Last.fm…`);
         const v = await verifyGenreWithLastFM(tag);
         if (v.valid && v.description) {
@@ -691,19 +691,19 @@ async function processArtistGenres(artistData) {
 }
 
 /**
- * Déduit les genres d'un événement à partir des artistes qui y participent.
- * Seules les occurrences d'un même genre atteignant MIN_GENRE_OCCURRENCE
- * ET NON bannies seront affectées à l'événement. Retourne la liste d'IDs retenus.
+ * Deduces the genres of an event from the artists participating in it.
+ * Only occurrences of the same genre reaching MIN_GENRE_OCCURRENCE
+ * AND NOT banned will be assigned to the event. Returns the list of selected IDs.
  */
 async function assignEventGenres(eventId) {
-    // 1) Récupérer les artists de l’event
+    // 1) Get the event's artists
     const { data: eventArtists, error: eaError } = await supabase
         .from('event_artist')
         .select('artist_id')
         .eq('event_id', eventId);
     if (eaError) throw eaError;
 
-    // 2) Compter les genres
+    // 2) Count the genres
     const genreCounts = {};
     for (const { artist_id } of eventArtists) {
         for (const aid of artist_id) {
@@ -718,7 +718,7 @@ async function assignEventGenres(eventId) {
         }
     }
 
-    // 3) Premier filtre : seuil + exclusion des bannis
+    // 3) First filter: threshold + exclusion of banned genres
     let topGenreIds = Object.entries(genreCounts)
         .filter(([genreId, count]) =>
             count >= MIN_GENRE_OCCURRENCE &&
@@ -728,7 +728,7 @@ async function assignEventGenres(eventId) {
         .slice(0, 5)
         .map(([genreId]) => Number(genreId));
 
-    // 4) Fallback plus permissif : on ignore le seuil, mais pas les bannis
+    // 4) More permissive fallback: ignore the threshold, but not the banned genres
     if (topGenreIds.length === 0) {
         topGenreIds = Object.entries(genreCounts)
             .filter(([genreId]) => !bannedGenreIds.includes(Number(genreId)))
@@ -737,18 +737,18 @@ async function assignEventGenres(eventId) {
             .map(([genreId]) => Number(genreId));
 
         console.log(
-            `[Genres] Aucun genre ≥ ${MIN_GENRE_OCCURRENCE} occurences non-banni pour event ${eventId}, ` +
-            `fallback top 3 sans seuil :`,
+            `[Genres] No genre ≥ ${MIN_GENRE_OCCURRENCE} non-banned occurrences for event ${eventId}, ` +
+            `fallback top 3 without threshold:`,
             topGenreIds
         );
     } else {
         console.log(
-            `[Genres] Top genres pour event ${eventId} (seuil ${MIN_GENRE_OCCURRENCE}) :`,
+            `[Genres] Top genres for event ${eventId} (threshold ${MIN_GENRE_OCCURRENCE}):`,
             topGenreIds
         );
     }
 
-    // 5) Enregistrer dans event_genre
+    // 5) Save in event_genre
     for (const genreId of topGenreIds) {
         await ensureRelation(
             "event_genre",
@@ -761,19 +761,19 @@ async function assignEventGenres(eventId) {
 }
 
 /**
- * Pour un promoteur, déduit ses genres via ses événements.
- * Seules les occurrences atteignant MIN_GENRE_OCCURRENCE et non bannies
- * seront affectées ; sinon, fallback sur le top 5.
+ * For a promoter, deduces their genres via their events.
+ * Only occurrences reaching MIN_GENRE_OCCURRENCE and not banned
+ * will be assigned; otherwise, fallback to the top 5.
  */
 async function assignPromoterGenres(promoterId) {
-    // 1) Récupérer les events du promoteur
+    // 1) Get the promoter's events
     const { data: promoterEvents, error: peError } = await supabase
         .from('event_promoter')
         .select('event_id')
         .eq('promoter_id', promoterId);
     if (peError) throw peError;
 
-    // 2) Compter les genres de ces events
+    // 2) Count the genres of these events
     const genreCounts = {};
     for (const { event_id } of promoterEvents) {
         const { data: eventGenres, error: egError } = await supabase
@@ -786,7 +786,7 @@ async function assignPromoterGenres(promoterId) {
         });
     }
 
-    // 3) Premier filtre : seuil + exclusion des bannis
+    // 3) First filter: threshold + exclusion of banned genres
     let topGenreIds = Object.entries(genreCounts)
         .filter(([genreId, count]) =>
             count >= MIN_GENRE_OCCURRENCE &&
@@ -796,7 +796,7 @@ async function assignPromoterGenres(promoterId) {
         .slice(0, 5)
         .map(([genreId]) => Number(genreId));
 
-    // 4) Fallback plus permissif
+    // 4) More permissive fallback
     if (topGenreIds.length === 0) {
         topGenreIds = Object.entries(genreCounts)
             .filter(([genreId]) => !bannedGenreIds.includes(Number(genreId)))
@@ -805,18 +805,18 @@ async function assignPromoterGenres(promoterId) {
             .map(([genreId]) => Number(genreId));
 
         console.log(
-            `[Genres] Aucun genre ≥ ${MIN_GENRE_OCCURRENCE} occurences non-banni pour promoteur ${promoterId}, ` +
-            `fallback top 3 sans seuil :`,
+            `[Genres] No genre ≥ ${MIN_GENRE_OCCURRENCE} non-banned occurrences for promoter ${promoterId}, ` +
+            `fallback top 3 without threshold:`,
             topGenreIds
         );
     } else {
         console.log(
-            `[Genres] Top genres pour promoteur ${promoterId} (seuil ${MIN_GENRE_OCCURRENCE}) :`,
+            `[Genres] Top genres for promoter ${promoterId} (threshold ${MIN_GENRE_OCCURRENCE}):`,
             topGenreIds
         );
     }
 
-    // 5) Enregistrer dans promoter_genre
+    // 5) Save in promoter_genre
     for (const genreId of topGenreIds) {
         await ensureRelation(
             "promoter_genre",
@@ -830,12 +830,12 @@ async function assignPromoterGenres(promoterId) {
 
 // --- Existing Manage Promoters (unchanged) ---
 /**
- * Recherche ou insère un promoteur, puis retourne { id, name, image_url }.
+ * Finds or inserts a promoter, then returns { id, name, image_url }.
  */
 async function findOrInsertPromoter(promoterName, eventData) {
     const normalizedName = getNormalizedName(promoterName);
 
-    // 1) Exact match sur le nom
+    // 1) Exact match on the name
     const { data: exactMatches, error: exactError } = await supabase
         .from('promoters')
         .select('id, name, image_url')
@@ -844,11 +844,11 @@ async function findOrInsertPromoter(promoterName, eventData) {
 
     if (exactMatches && exactMatches.length > 0) {
         const p = exactMatches[0];
-        console.log(`➡️ Promoter "${promoterName}" trouvé (exact) → id=${p.id}`);
+        console.log(`➡️ Promoter "${promoterName}" found (exact) → id=${p.id}`);
         return { id: p.id, name: p.name, image_url: p.image_url };
     }
 
-    // 2) Fuzzy match contre tous les promoteurs existants
+    // 2) Fuzzy match against all existing promoters
     const { data: allPromoters, error: allError } = await supabase
         .from('promoters')
         .select('id, name, image_url');
@@ -863,24 +863,24 @@ async function findOrInsertPromoter(promoterName, eventData) {
         if (bestMatch.rating >= FUZZY_THRESHOLD) {
             const p = allPromoters[bestMatchIndex];
             console.log(
-                `➡️ Promoteur "${promoterName}" similaire à "${p.name}" → id=${p.id}`
+                `➡️ Promoter "${promoterName}" similar to "${p.name}" → id=${p.id}`
             );
             return { id: p.id, name: p.name, image_url: p.image_url };
         }
     }
 
-    // 3) Insertion d'un nouveau promoteur
-    console.log(`➡️ Insertion d’un nouveau promoteur "${promoterName}"…`);
+    // 3) Insertion of a new promoter
+    console.log(`➡️ Inserting a new promoter "${promoterName}"…`);
     const promoterSource = eventData.hosts.find(h => h.name === promoterName);
     const newPromoterData = { name: normalizedName };
 
-    // tenter de récupérer une image haute résolution via Facebook Graph
+    // try to get a high-resolution image via Facebook Graph
     if (promoterSource?.id) {
         const highRes = await fetchHighResImage(promoterSource.id);
         if (highRes) newPromoterData.image_url = highRes;
     }
 
-    // fallback sur photo.imageUri si disponible
+    // fallback to photo.imageUri if available
     if (!newPromoterData.image_url && promoterSource?.photo?.imageUri) {
         newPromoterData.image_url = promoterSource.photo.imageUri;
     }
@@ -890,12 +890,12 @@ async function findOrInsertPromoter(promoterName, eventData) {
         .insert(newPromoterData)
         .select('id, name, image_url');
     if (insertError || !inserted || inserted.length === 0) {
-        throw insertError || new Error('Échec de l’insertion du promoteur');
+        throw insertError || new Error('Promoter insertion failed');
     }
 
     const created = inserted[0];
     console.log(
-        `✅ Promoteur inséré : "${promoterName}" → id=${created.id}`
+        `✅ Promoter inserted: "${promoterName}" → id=${created.id}`
     );
     return {
         id: created.id,
@@ -910,23 +910,23 @@ async function findOrInsertArtist(artistObj) {
     let artistName = (artistObj.name || '').trim();
     if (!artistName) return null;
 
-    // 1. Normalisation du nom
+    // 1. Name normalization
     artistName = normalizeNameEnhanced(artistName);
 
-    // 2. Recherche sur SoundCloud
+    // 2. Search on SoundCloud
     const token = await getAccessToken();
     let scArtist = null;
     if (token) {
         scArtist = await searchArtist(artistName, token);
     }
 
-    // 3. Construction de l'objet artistData
+    // 3. Construction of the artistData object
     let artistData;
     if (scArtist) {
-        // Si trouvé sur SC, extraire les infos enrichies
+        // If found on SC, extract enriched info
         artistData = await extractArtistInfo(scArtist);
     } else {
-        // Sinon fallback minimal
+        // Otherwise minimal fallback
         artistData = {
             name: artistName,
             external_links: artistObj.soundcloud
@@ -939,7 +939,7 @@ async function findOrInsertArtist(artistObj) {
         artistData.external_links = normalizeExternalLinks(artistData.external_links);
     }
 
-    // 4. Détection de doublons via lien SoundCloud
+    // 4. Duplicate detection via SoundCloud link
     if (artistData.external_links?.soundcloud?.id) {
         const { data: existingByExternal, error: extError } = await supabase
             .from('artists')
@@ -952,7 +952,7 @@ async function findOrInsertArtist(artistObj) {
         }
     }
 
-    // 5. Détection de doublons via nom
+    // 5. Duplicate detection via name
     const { data: existingByName, error: nameError } = await supabase
         .from('artists')
         .select('id')
@@ -963,7 +963,7 @@ async function findOrInsertArtist(artistObj) {
         return existingByName[0].id;
     }
 
-    // 6. Insertion du nouvel artiste
+    // 6. Insertion of the new artist
     const { data: inserted, error: insertError } = await supabase
         .from('artists')
         .insert(artistData)
@@ -972,16 +972,16 @@ async function findOrInsertArtist(artistObj) {
     const newArtistId = inserted[0].id;
     console.log(`✅ Artist inserted: "${artistName}" (id=${newArtistId})`);
 
-    // 7. Traitement des genres et liaison
+    // 7. Processing and linking genres
     try {
         const genres = await processArtistGenres(artistData);
         for (const genreObj of genres) {
             if (genreObj.id) {
-                // ✨ Alias DnB détecté → liaison directe sur l'ID forcé (437)
+                // ✨ DnB alias detected → direct link to the forced ID (437)
                 await linkArtistGenre(newArtistId, genreObj.id);
                 console.log(`   ↳ Linked artist to forced genre_id=${genreObj.id}`);
             } else {
-                // Workflow normal pour les autres genres
+                // Normal workflow for other genres
                 const genreId = await insertGenreIfNew(genreObj);
                 await linkArtistGenre(newArtistId, genreId);
                 console.log(`   ↳ Linked artist to genre_id=${genreId}`);
@@ -1179,7 +1179,7 @@ async function main() {
         }
 
         // (1) Process promoters
-        // On remplace `promoterIds` par `promoterInfos`, qui contiendra { id, name, image_url }
+        // We replace `promoterIds` with `promoterInfos`, which will contain { id, name, image_url }
         const promoterInfos = [];
 
         for (const promoterName of promotersList) {
@@ -1188,20 +1188,20 @@ async function main() {
             console.log(`
 🔍 Processing promoter "${promoterName}"...`);
 
-            // Valeur par défaut en DRY_RUN
+            // Default value in DRY_RUN
             let info = { id: null, name: promoterName, image_url: null };
 
             if (DRY_RUN) {
                 console.log(`(DRY_RUN) Would find/insert promoter: "${promoterName}"`);
             } else {
-                // findOrInsertPromoter renvoie désormais { id, name, image_url }
+                // findOrInsertPromoter now returns { id, name, image_url }
                 info = await findOrInsertPromoter(promoterName, eventData);
             }
 
             promoterInfos.push(info);
         }
 
-        // Déclaration unique de promoterIds, accessible dans tout le script
+        // Unique declaration of promoterIds, accessible throughout the script
         const promoterIds = promoterInfos
             .map(p => p.id)
             .filter(id => id);
@@ -1255,13 +1255,13 @@ async function main() {
                             // 2D) Insert new venue
                             console.log(`➡️ No venue found for "${normalizedVenueName}". Inserting new venue...`);
 
-                            // 2D-1) Normalisation de l'adresse via Node-Geocoder
+                            // 2D-1) Address normalization via Node-Geocoder
                             let standardizedAddress = venueAddress;
                             try {
                                 const geoResults = await geocoder.geocode(venueAddress);
                                 if (geoResults && geoResults.length > 0) {
                                     const g = geoResults[0];
-                                    // mapping ad-hoc du pays
+                                    // ad-hoc country mapping
                                     let country = g.country;
                                     if (country === 'België / Belgique / Belgien') {
                                         country = 'Belgium';
@@ -1274,19 +1274,19 @@ async function main() {
                                         country
                                     ].filter(Boolean).join(', ');
                                     if (standardizedAddress.length > 0) {
-                                        console.log(`✅ Adresse normalisée: "${standardizedAddress}"`);
+                                        console.log(`✅ Standardized address: "${standardizedAddress}"`);
                                     } else {
-                                        console.warn(`⚠️ Géocoding partiel pour l'adresse: "${venueAddress}" → ${JSON.stringify(g)}`);
+                                        console.warn(`⚠️ Partial geocoding for address: "${venueAddress}" → ${JSON.stringify(g)}`);
                                     }
                                 } else {
-                                    console.warn(`   ⚠️ Pas de résultat géocoding pour "${venueAddress}", on garde l’original.`);
+                                    console.warn(`   ⚠️ No geocoding result for "${venueAddress}", keeping the original.`);
                                 }
                             } catch (errNorm) {
-                                console.warn(`   ⚠️ Échec géocoding pour "${venueAddress}": ${errNorm.message}`);
+                                console.warn(`   ⚠️ Geocoding failed for "${venueAddress}": ${errNorm.message}`);
                             }
                             // ─────────────────────────────────────────────────
 
-                            // 2D-2) Préparation des données
+                            // 2D-2) Data preparation
                             const newVenueData = {
                                 name: normalizedVenueName,
                                 location: standardizedAddress,
@@ -1298,7 +1298,7 @@ async function main() {
                                 newVenueData.location_point = `SRID=4326;POINT(${venueLongitude} ${venueLatitude})`;
                             }
 
-                            // 2D-3) Copier l’image du promoteur si les noms correspondent
+                            // 2D-3) Copy the promoter's image if the names match
                             const normVenue = normalizeNameEnhanced(normalizedVenueName).toLowerCase();
                             const matchingPromo = promoterInfos.find(p =>
                                 p.image_url &&
@@ -1312,18 +1312,18 @@ async function main() {
                                 );
                             }
 
-                            // 2D-4) Si toujours pas d’image, tenter Google Maps
+                            // 2D-4) If still no image, try Google Maps
                             if (!newVenueData.image_url) {
                                 try {
                                     const photoUrl = await fetchGoogleVenuePhoto(venueName, venueAddress);
                                     newVenueData.image_url = photoUrl;
-                                    console.log(`✅ image_url obtenue via Google Maps pour "${normalizedVenueName}"`);
+                                    console.log(`✅ image_url obtained via Google Maps for "${normalizedVenueName}"`);
                                 } catch (err) {
-                                    console.warn(`⚠️ Impossible de récupérer photo Google pour id=${venueId}: ${err.message}`);
+                                    console.warn(`⚠️ Could not retrieve Google photo for id=${venueId}: ${err.message}`);
                                 }
                             }
 
-                            // 2D-5) Insertion en base
+                            // 2D-5) Database insertion
                             const { data: newVenue, error: insertVenueError } = await supabase
                                 .from('venues')
                                 .insert(newVenueData)
@@ -1348,7 +1348,7 @@ async function main() {
         let eventId = null;
 
         if (!DRY_RUN) {
-            // Recherche par URL
+            // Search by URL
             const { data: eventsByUrl, error: eventsByUrlError } = await supabase
                 .from('events')
                 .select('id, metadata')
@@ -1359,7 +1359,7 @@ async function main() {
                 eventId = eventsByUrl[0].id;
                 console.log(`➡️ Event found by facebook_url (id=${eventId}).`);
             } else {
-                // Recherche par titre
+                // Search by title
                 const { data: eventsByName, error: eventsByNameError } = await supabase
                     .from('events')
                     .select('id')
@@ -1375,7 +1375,7 @@ async function main() {
             if (eventId) {
                 console.log("\n🔄 Event already exists. Checking for updates...");
 
-                // --- NOUVEAU : récupérer l'existant et comparer ---
+                // --- NEW: get the existing record and compare ---
                 const { data: existing, error: fetchErr } = await supabase
                     .from('events')
                     .select('description, date_time, end_date_time')
@@ -1400,15 +1400,15 @@ async function main() {
                         .update(updates)
                         .eq('id', eventId);
                     if (updateErr) throw updateErr;
-                    console.log(`🔄 Event (id=${eventId}) mis à jour:`, updates);
+                    console.log(`🔄 Event (id=${eventId}) updated:`, updates);
                 } else {
-                    console.log(`ℹ️ Event (id=${eventId}) déjà à jour, pas de modification nécessaire.`);
+                    console.log(`ℹ️ Event (id=${eventId}) already up to date, no changes needed.`);
                 }
 
-                // … ici vous pouvez continuer avec les relations event_promoter, event_venue, etc.
+                // … here you can continue with event_promoter, event_venue relations, etc.
 
             } else {
-                // Insertion d'un nouvel événement
+                // Insertion of a new event
                 console.log(`\n📝 Inserting event "${eventName}" into the events table...`);
                 const metadata = { facebook_url: fbEventUrl };
                 if (eventData.ticketUrl) {
@@ -1439,7 +1439,7 @@ async function main() {
 
         // (4) Create relations: event_promoter, event_venue, venue_promoter
         if (!DRY_RUN && eventId) {
-            // Relations event_promoter
+            // event_promoter relations
             console.log("\n🔗 Ensuring event_promoter relations...");
             for (const pid of promoterIds) {
                 await ensureRelation(
@@ -1449,7 +1449,7 @@ async function main() {
                 );
             }
 
-            // Relation event_venue
+            // event_venue relation
             if (venueId) {
                 console.log("\n🔗 Ensuring event_venue relation...");
                 await ensureRelation(
@@ -1459,7 +1459,7 @@ async function main() {
                 );
             }
 
-            // Relations venue_promoter
+            // venue_promoter relations
             if (venueId && venueName) {
                 console.log("\n🔗 Ensuring venue_promoter relations...");
                 for (const pInfo of promoterInfos) {
@@ -1537,7 +1537,7 @@ ${eventDescription}
                     .trim();
                 parsedArtists = JSON.parse(artistsJSON);
                 console.log("➡️ OpenAI parsed artists:", parsedArtists);
-                // Écriture de la sortie OpenAI dans le fichier "artists.json"
+                // Write OpenAI output to "artists.json" file
                 fs.writeFileSync('artists.json', JSON.stringify(parsedArtists, null, 2));
             } catch (err) {
                 console.error("❌ Could not parse artists from OpenAI response:", err);
@@ -1602,8 +1602,8 @@ ${eventDescription}
     }
 }
 
-// 4) Lancement
+// 4) Start
 main().catch(err => {
-    console.error("❌ Erreur non gérée:", err);
+    console.error("❌ Unhandled error:", err);
     process.exit(1);
 });
