@@ -312,7 +312,7 @@ async function findExistingEvent(eventUrl) {
     }
 }
 
-import { toUtcIso } from './date_utils.js';
+import { toUtcIso } from './utils/date_utils.js';
 function extractStagesAndDaysFromPerformances(performances, timezone = 'Europe/Brussels') {
     // Extract unique stages
     const stagesSet = new Set();
