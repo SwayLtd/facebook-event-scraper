@@ -114,6 +114,15 @@ async function main() {
         const venueLatitude = (location && location.coordinates) ? location.coordinates.latitude : null;
         const venueLongitude = (location && location.coordinates) ? location.coordinates.longitude : null;
 
+        // Log image info for debugging
+        if (eventData.photo && eventData.photo.imageUri) {
+            console.log(`🖼️ Event image found: ${eventData.photo.imageUri}`);
+        } else if (eventData.photo) {
+            console.log('🖼️ Event photo object exists but no imageUri:', eventData.photo);
+        } else {
+            console.log('⚠️ No event image found (eventData.photo is null or undefined)');
+        }
+
         if (!venueAddress && venueName) {
             console.log(`\n🔍 No address found from Facebook for venue "${venueName}". Querying Google Maps...`);
             const googleResult = await venueModel.fetchAddressFromGoogle(venueName, googleApiKey, geocodingExceptions);
