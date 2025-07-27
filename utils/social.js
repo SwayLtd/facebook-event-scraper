@@ -4,8 +4,8 @@
 import fetch from 'node-fetch';
 
 // --- Social Link Normalization Helpers (from updateArtistExternalLinks.js) ---
-const URL_REGEX = /\bhttps?:\/\/[^\")\s'<>]+/gi;
-const HANDLE_REGEX = /(?:IG:?|Insta:?|Instagram:?|Twitter:?|TW:?|X:?|x:?|FB:?|Facebook:?|SC:?|SoundCloud:?|Wiki:?|Wikipedia:?|BandCamp:?|BC:?|@)([A-Za-z0-9._-]+)/gi;
+// const URL_REGEX = /\bhttps?:\/\/[^\")\s'<>]+/gi;
+// const HANDLE_REGEX = /(?:IG:?|Insta:?|Instagram:?|Twitter:?|TW:?|X:?|x:?|FB:?|Facebook:?|SC:?|SoundCloud:?|Wiki:?|Wikipedia:?|BandCamp:?|BC:?|@)([A-Za-z0-9._-]+)/gi;
 const VALID_ID = /^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?$/;
 
 function normalizeSocialLink(raw) {

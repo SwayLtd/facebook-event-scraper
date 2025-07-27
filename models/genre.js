@@ -104,10 +104,6 @@ async function fetchArtistTracks(soundcloudUserId, token) {
     }
 }
 
-function cleanDescription(rawSummary) {
-    return rawSummary.replace(/<a href="[^"]+"[^>]*>Read more on Last.fm<\/a>\s*User-contributed text is available under the Creative Commons By-SA License; additional terms may apply\./, '').trim();
-}
-
 /**
  * Checks via Last.fm if the tag corresponds to a musical genre.
  * @param {string} tagName - The tag to verify.

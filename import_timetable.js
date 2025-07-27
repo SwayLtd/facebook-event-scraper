@@ -211,7 +211,7 @@ async function insertOrUpdateArtist(artistData, soundCloudData = null) {
         };
         if (existingArtist) {
             // Update
-            const { data: updated, error: updateError } = await supabase
+            const { error: updateError } = await supabase
                 .from('artists')
                 .update(artistRecord)
                 .eq('id', existingArtist.id)
@@ -554,7 +554,7 @@ async function main() {
         }
         // Artists with multiple performances
         const multiplePerformances = Object.entries(artistPerformances)
-            .filter(([_, performances]) => performances.length > 1)
+            .filter(([performances]) => performances.length > 1)
             .sort((a, b) => b[1].length - a[1].length);
         if (multiplePerformances.length > 0) {
             logMessage(`\n🔄 Artists with multiple performances (${multiplePerformances.length}):`);
