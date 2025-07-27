@@ -10,17 +10,17 @@ import { normalizeNameEnhanced, getNormalizedName } from './utils/name.js';
 
 // Import models
 import artistModel from './models/artist.js';
-import { refineGenreName } from './utils/genre.js';
+import genreModel from './utils/genre.js';
 import promoterModel from './models/promoter.js';
 import venueModel from './models/venue.js';
 
 // Import utility functions
 import geoUtils from './utils/geo.js';
+import databaseUtils from './utils/database.js';
 
 // --- Global Parameters ---
 const DRY_RUN = false; // Set true for dry-run mode (no DB writes)
 const FUZZY_THRESHOLD = 0.75; // Similarity threshold for fuzzy matching
-const MIN_GENRE_OCCURRENCE = 3; // Minimum occurrences for genre assignment
 
 const bannedGenres = ["90s", "Disco", "Dub", "Guaracha", "Bootleg", "Montreal", "Lebanon", "Stereo", "Berghain", "Jaw", "Not", "Monster", "Dream", "Drone", "Eurodance", "Storytelling", "Nostalgic", "Guitar", "Art", "Future", "Romania", "Drums", "Atmosphere", "Emo", "Lyrical", "Indonesia", "Mood", "Mellow", "Work", "Feminism", "Download", "This", "Poetry", "Sound", "Malibu", "Twek", "Money", "Orgasm", "Cover", "Viral", "Sexy", "Z", "Nas", "Weird", "P", "Indonesion", "Funky", "Tearout", "Uplifting", "Love", "Core", "Violin", "Simpsons", "Riddim", "World Music", "Dancehall", "Gbr", "Fußball", "German", "New", "Eargasm", "Ecstasy", "Coldwave", "Brazilian", "Beat", "Song", "Soulful", "Smooth", "Contemporary", "Ballad", "Modern", "Beyonce", "Occult", "Evil", "Vinyl", "2000's", "Dog", "Gangsta", "Hair", "Soundtrack", "Hard Drance", "Bassline", "Queer", "Interview", "Krautrock", "Soundscape", "Darkwave", "Atmospheric", "Americana", "Mpc", "Detroit", "Fast", "Argentina", "Emotional", "Germany", "Frankfurt", "Karlsruhe", "Driving", "Cosmic", "Summer", "Basement", "Beachbar", "Party", "Producer", "Alive", "Pulse", "Coding", "Offensive", "Alex", "Time", "Soho", "Spring", "Aus", "X", "Modern Dancehall", "Elektra", "Piano", "Italo", "Synth", "Ghetto", "Moombahton", "Ghetto", "Chicago", "Happy", "80s", "Munich", "Melancholic", "Samples", "Madrid", "Amapiano", "00s", "Breakbeat", "Retro", "Breakz", "Spain", "Pandora", "Tropical", "Latin Pop", "Night", "Aussie", "Australian", "Fire", "Hot", "Spotify", "Ur", "2step", "Lonely", "Sad", "Angry", "Heavy", "Hex", "A", "Complex", "Freestyle", "Mainstream", "All", "Long", "Antifa", "Horror", "Scary", "Japan", "Popular", "Memphis", "Nostalgia", "Ost", "Speech", "Shoegaze", "Orchestral", "London", "Kinky", "Tresor", "Chillout", "Cool", "Sun", "Ethnic", "Banjo", "Trippy", "Persian", "Traditional", "Persian Traditional", "Bochka", "Oh", "God", "Kids", "Compilation", "Ghost", "Space", "Christ", "Based", "De", "Juke", "Gent", "Valearic", "Ebm", "Sac-sha", "Amsterdam", "Noise", "Eclectic", "Hi-nrg", "Antwerp", "Feelgood", "Body", "Indie Dance", "Barcelona", "Fusion", "C", "Comedy", "Zephyr", "E", "Tiktok", "Brasil", "O", "It", "Us", "Yes", "Scantraxx", "Qlimax", "Style", "Italian", "Spiritual", "Quiet", "Best", "Denver", "Colorado", "Soca", "Bobo", "G", "Zouk", "Booba", "Game", "Cello", "Jam", "Hardtekk", "Break", "Goa", "Boogie", "Idm", "Haldtime", "Spanish", "Screamo", "Ra", "Jersey", "Organ", "Palestine", "Congo", "Healing", "Minecraft", "Cyberpunk", "Television", "Film", "Cursed", "Crossbreed", "Funama", "Kuduro", "Mashups", "Collaboration", "France", "Alien", "Banger", "Tool", "Insomnia", "Flow", "Kafu", "Adele", "Makina", "Manchester", "Salford", "Macedonia", "Japanese", "Relax", "Relaxing", "Relaxation", "Is", "Bdr", "Bier", "Jckson", "Jersey Club", "Big Room", "Brooklyn", "Coffee", "Green", "Tekkno", "Flips", "Sia", "Ccr", "Ai", "Unicorn", "Q", "Aversion", "Gym", "Get", "Buningman", "Rotterdam", "Matrix", "Indian", "Brazil", "S", "Hybrid", "Beats", "Singer", "Ans", "Theme", "Future Bass", "Club House", "Glam", "Aggressive", "Prog", "Technoid", "Funny", "Raggamuffin", "Bangface", "Bandcamp", "Bristol", "Organic", "Brazilian Phonk", "Revolution", "Afterlife", "Rockabilly", "Tune", "Brixton", "Psydub", "Harmony", "Montana", "Imaginarium", "Cheesy", "Choral", "other", "mixtape", "world", "venice", "hate", "bbc", "original", "hip", "Indie", "dan", "wave", "J", "deep", "holiday", "berlin", "Classic", "fun", "Electric", "Leftfield", "Italo-disco", "Electronica", "Singer-songwriter", "alternative", "sampled", "anime", "hit", "speed garage", "groovy", "donk", "latin", "R", "soul", "trash", "vocal", "alternative rock", "werewolf", "christmas", "xmas", "amen", "fox", "you", "Dl", "girl", "Intelligent", "audio", "musical", "tony", "moon", "ukf", "zombies", "Complextro", "Doom", "death", "Monstercat", "cake", "scene", "queen", "slam", "fox", "Czech", "workout", "winter", "modus", "iaginarium", "avalon", "fullon", "football", "colombia", "portugal", "badass", "recorder", "chile", "road", "breton", "sufi", "chanson", "noize", "balada", "running", "footwork", "santa", "crazy", "microwave", "bop", "great", "carnaval", "standard", "demo", "twilight", "female", "hippie", "community", "meditative", "yoga", "meditation", "drop", "haunting", "chant", "Birmingham", "opium", "combo", "austria", "old", "worldwide", "free", "rap", "d", "snap", "n", "hip-hop", "hiphip", "breaks", "electronic", "belgian", "belgium", "up", "noir", "bass", "murder", "ep", "rave", "bad", "oldschool", "music", "remix", "track", "podcast", "dance", "set", "festival", "ecstacy", "uk", "live", "paris", "internet", "episode", "r", "D", "club", "dj", "mix", "radio", "soundcloud", "sesh"];
 
@@ -81,255 +81,7 @@ try {
     console.error("Error loading geocoding_exceptions.json:", err);
 }
 
-// Load geocoding exceptions
-
-// Load banned genre IDs into memory
-async function getBannedGenreIds() {
-    const { data: bannedGenreRecords, error: bannedError } = await supabase
-        .from('genres')
-        .select('id')
-        .in('name', bannedGenres.map(g => refineGenreName(g)));
-    if (bannedError) throw bannedError;
-    return bannedGenreRecords.map(r => r.id);
-}
-
 let bannedGenreIds = [];
-
-/**
- * For a promoter, deduces their genres via their events.
- * Only occurrences reaching MIN_GENRE_OCCURRENCE and not banned
- * will be assigned; otherwise, fallback to the top 5.
- */
-async function assignPromoterGenres(promoterId) {
-    // 1) Get the promoter's events
-    const { data: promoterEvents, error: peError } = await supabase
-        .from('event_promoter')
-        .select('event_id')
-        .eq('promoter_id', promoterId);
-    if (peError) throw peError;
-
-    // 2) Count the genres of these events
-    const genreCounts = {};
-    for (const { event_id } of promoterEvents) {
-        const { data: eventGenres, error: egError } = await supabase
-            .from('event_genre')
-            .select('genre_id')
-            .eq('event_id', event_id);
-        if (egError) throw egError;
-        eventGenres.forEach(g => {
-            genreCounts[g.genre_id] = (genreCounts[g.genre_id] || 0) + 1;
-        });
-    }
-
-    // 3) First filter: threshold + exclusion of banned genres
-    let topGenreIds = Object.entries(genreCounts)
-        .filter(([genreId, count]) =>
-            count >= MIN_GENRE_OCCURRENCE &&
-            !bannedGenreIds.includes(Number(genreId))
-        )
-        .sort(([, a], [, b]) => b - a)
-        .slice(0, 5)
-        .map(([genreId]) => Number(genreId));
-
-    // 4) More permissive fallback
-    if (topGenreIds.length === 0) {
-        topGenreIds = Object.entries(genreCounts)
-            .filter(([genreId]) => !bannedGenreIds.includes(Number(genreId)))
-            .sort(([, a], [, b]) => b - a)
-            .slice(0, 3)
-            .map(([genreId]) => Number(genreId));
-
-        console.log(
-            `[Genres] No genre ≥ ${MIN_GENRE_OCCURRENCE} non-banned occurrences for promoter ${promoterId}, ` +
-            `fallback top 3 without threshold:`,
-            topGenreIds
-        );
-    } else {
-        console.log(
-            `[Genres] Top genres for promoter ${promoterId} (threshold ${MIN_GENRE_OCCURRENCE}):`,
-            topGenreIds
-        );
-    }
-
-    // 5) Save in promoter_genre
-    for (const genreId of topGenreIds) {
-        await ensureRelation(
-            "promoter_genre",
-            { promoter_id: promoterId, genre_id: genreId },
-            "promoter_genre"
-        );
-    }
-
-    return topGenreIds;
-}
-
-// --- Artists Management ---
-
-async function createEventArtistRelation(eventId, artistId, artistObj) {
-    if (!artistId) return;
-    const artistIdStr = String(artistId);
-
-    let startTime = null;
-    let endTime = null;
-    const stage = artistObj.stage || null;
-    const customName = null;
-
-    if (artistObj.time && artistObj.time.trim() !== "") {
-        const match = artistObj.time.match(/(\d{1,2}:\d{2})-?(\d{1,2}:\d{2})?/);
-        if (match) {
-            const startStr = match[1];
-            const endStr = match[2] || null;
-            if (startStr) {
-                startTime = `2025-06-27T${startStr}:00`;
-            }
-            if (endStr) {
-                endTime = `2025-06-27T${endStr}:00`;
-            }
-        }
-    }
-
-    let query = supabase
-        .from('event_artist')
-        .select('*')
-        .eq('event_id', eventId);
-
-    if (stage === null) {
-        query = query.is('stage', null);
-    } else {
-        query = query.eq('stage', stage);
-    }
-    query = query.is('custom_name', null);
-    if (startTime === null) {
-        query = query.is('start_time', null);
-    } else {
-        query = query.eq('start_time', startTime);
-    }
-    if (endTime === null) {
-        query = query.is('end_time', null);
-    } else {
-        query = query.eq('end_time', endTime);
-    }
-    query = query.contains('artist_id', [artistIdStr]);
-
-    const { data: existing, error } = await query;
-    if (error) {
-        console.error("Error during existence check:", error);
-        throw error;
-    }
-    if (existing && existing.length > 0) {
-        console.log(`➡️ A row already exists for artist_id=${artistIdStr} with the same performance details.`);
-        return;
-    }
-
-    const row = {
-        event_id: eventId,
-        artist_id: [artistIdStr],
-        start_time: startTime,
-        end_time: endTime,
-        status: 'confirmed',
-        stage: stage,
-        custom_name: customName
-    };
-
-    const { data, error: insertError } = await supabase
-        .from('event_artist')
-        .insert(row)
-        .select();
-    if (insertError) {
-        console.error("Error creating event_artist relation:", insertError);
-    } else {
-        console.log(`➡️ Created event_artist relation for artist_id=${artistIdStr}`, data);
-    }
-}
-
-// --- Genres Management ---
-
-/**
- * Deduces the genres of an event from the artists participating in it.
- * Only occurrences of the same genre reaching MIN_GENRE_OCCURRENCE
- * AND NOT banned will be assigned to the event. Returns the list of selected IDs.
- */
-async function assignEventGenres(eventId) {
-    // 1) Get the event's artists
-    const { data: eventArtists, error: eaError } = await supabase
-        .from('event_artist')
-        .select('artist_id')
-        .eq('event_id', eventId);
-    if (eaError) throw eaError;
-
-    // 2) Count the genres
-    const genreCounts = {};
-    for (const { artist_id } of eventArtists) {
-        for (const aid of artist_id) {
-            const { data: artistGenres, error: agError } = await supabase
-                .from('artist_genre')
-                .select('genre_id')
-                .eq('artist_id', parseInt(aid, 10));
-            if (agError) throw agError;
-            artistGenres.forEach(g => {
-                genreCounts[g.genre_id] = (genreCounts[g.genre_id] || 0) + 1;
-            });
-        }
-    }
-
-    // 3) First filter: threshold + exclusion of banned genres
-    let topGenreIds = Object.entries(genreCounts)
-        .filter(([genreId, count]) =>
-            count >= MIN_GENRE_OCCURRENCE &&
-            !bannedGenreIds.includes(Number(genreId))
-        )
-        .sort(([, a], [, b]) => b - a)
-        .slice(0, 5)
-        .map(([genreId]) => Number(genreId));
-
-    // 4) More permissive fallback: ignore the threshold, but not the banned genres
-    if (topGenreIds.length === 0) {
-        topGenreIds = Object.entries(genreCounts)
-            .filter(([genreId]) => !bannedGenreIds.includes(Number(genreId)))
-            .sort(([, a], [, b]) => b - a)
-            .slice(0, 3)
-            .map(([genreId]) => Number(genreId));
-
-        console.log(
-            `[Genres] No genre ≥ ${MIN_GENRE_OCCURRENCE} non-banned occurrences for event ${eventId}, ` +
-            `fallback top 3 without threshold:`,
-            topGenreIds
-        );
-    } else {
-        console.log(
-            `[Genres] Top genres for event ${eventId} (threshold ${MIN_GENRE_OCCURRENCE}):`,
-            topGenreIds
-        );
-    }
-
-    // 5) Save in event_genre
-    for (const genreId of topGenreIds) {
-        await ensureRelation(
-            "event_genre",
-            { event_id: eventId, genre_id: genreId },
-            "event_genre"
-        );
-    }
-
-    return topGenreIds;
-}
-
-async function ensureRelation(table, relationData, relationName) {
-    const { data, error } = await supabase
-        .from(table)
-        .select()
-        .match(relationData);
-    if (error) throw error;
-    if (!data || data.length === 0) {
-        const { error: insertError } = await supabase
-            .from(table)
-            .insert(relationData);
-        if (insertError) throw insertError;
-        console.log(`✅ ${relationName} relation created: ${JSON.stringify(relationData)}`);
-    } else {
-        console.log(`➡️ ${relationName} relation already exists: ${JSON.stringify(relationData)}`);
-    }
-}
 
 // --- MAIN SCRIPT ---
 async function main() {
@@ -634,7 +386,7 @@ async function main() {
             // event_promoter relations
             console.log("\n🔗 Ensuring event_promoter relations...");
             for (const pid of promoterIds) {
-                await ensureRelation(
+                await databaseUtils.ensureRelation(supabase, 
                     "event_promoter",
                     { event_id: eventId, promoter_id: pid },
                     "event_promoter"
@@ -644,7 +396,7 @@ async function main() {
             // event_venue relation
             if (venueId) {
                 console.log("\n🔗 Ensuring event_venue relation...");
-                await ensureRelation(
+                await databaseUtils.ensureRelation(supabase,
                     "event_venue",
                     { event_id: eventId, venue_id: venueId },
                     "event_venue"
@@ -660,7 +412,7 @@ async function main() {
                         normalizeNameEnhanced(pInfo.name).toLowerCase() ===
                         normalizeNameEnhanced(venueName).toLowerCase()
                     ) {
-                        await ensureRelation(
+                        await databaseUtils.ensureRelation(supabase,
                             "venue_promoter",
                             { venue_id: venueId, promoter_id: pInfo.id },
                             "venue_promoter"
@@ -701,14 +453,14 @@ async function main() {
                 - If any piece of information (time, SoundCloud link, stage, performance_mode) is missing, use an empty string.
                 - The generated JSON must be valid and strictly follow the structure requested.
                 - The output should be in English.
-                `.trim();
+            `.trim();
 
             const userPrompt = `
-Text to Analyze:
+                Text to Analyze:
 
-\`\`\`
-${eventDescription}
-\`\`\`
+                \`\`\`
+                ${eventDescription}
+                \`\`\`
             `.trim();
 
             try {
@@ -754,7 +506,7 @@ ${eventDescription}
                     console.error(`❌ Error processing artist "${artistName}":`, e);
                 }
                 try {
-                    await createEventArtistRelation(eventId, artistId, artistObj);
+                    await databaseUtils.createEventArtistRelation(supabase, eventId, artistId, artistObj);
                 } catch (e) {
                     console.error(`❌ Error creating relation for artist "${artistName}":`, e);
                 }
@@ -769,7 +521,7 @@ ${eventDescription}
         // (7) Post-processing: Assign genres
         if (!DRY_RUN && eventId) {
             try {
-                await assignEventGenres(eventId);
+                await genreModel.assignEventGenres(supabase, eventId, bannedGenreIds);
                 console.log("✅ Event genres assigned.");
             } catch (err) {
                 console.error("Error assigning event genres:", err);
@@ -779,7 +531,7 @@ ${eventDescription}
             for (const promoterId of promoterIds) {
                 if (!promoterId) continue;
                 try {
-                    await assignPromoterGenres(promoterId);
+                    await promoterModel.assignPromoterGenres(supabase, promoterId, bannedGenreIds);
                     console.log(`✅ Genres assigned for promoter id=${promoterId}.`);
                 } catch (err) {
                     console.error(`Error assigning genres for promoter id=${promoterId}:`, err);
@@ -795,7 +547,7 @@ ${eventDescription}
 
 // Start script
 (async () => {
-    bannedGenreIds = await getBannedGenreIds();
+    bannedGenreIds = await genreModel.getBannedGenreIds(supabase, bannedGenres);
     await main().catch(err => {
         console.error("❌ Unhandled error:", err);
         process.exit(1);
