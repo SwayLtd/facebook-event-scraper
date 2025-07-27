@@ -1,16 +1,21 @@
 import 'dotenv/config';  // Load environment variables from a .env file if present
 import fs from 'fs';
-import fetch from 'node-fetch';  // Ensure node-fetch is installed
 import stringSimilarity from 'string-similarity'; // For fuzzy matching
 import { scrapeFbEvent } from 'facebook-event-scraper';
 import { createClient } from '@supabase/supabase-js';
 import NodeGeocoder from 'node-geocoder';
+import OpenAI from 'openai';
 
 import { normalizeNameEnhanced, getNormalizedName } from './utils/name.js';
 
+// Import models
+import artistModel from './models/artist.js';
 import { refineGenreName } from './utils/genre.js';
-import OpenAI from 'openai';
-import artistUtils from './models/artist.js';
+import promoterModel from './models/promoter.js';
+import venueModel from './models/venue.js';
+
+// Import utility functions
+import geoUtils from './utils/geo.js';
 
 // --- Global Parameters ---
 const DRY_RUN = false; // Set true for dry-run mode (no DB writes)
@@ -89,149 +94,6 @@ async function getBannedGenreIds() {
 }
 
 let bannedGenreIds = [];
-
-// --- Venues Management ---
-/**
- * Retrieves the URL of a Google Places photo for a given address.
- */
-async function fetchGoogleVenuePhoto(name, address) {
-    // Google Maps geocoding
-    const geoRes = await fetch(
-        `https://maps.googleapis.com/maps/api/geocode/json?address=${encodeURIComponent(address)}&key=${process.env.GOOGLE_API_KEY}`
-    );
-    const geoJson = await geoRes.json();
-    if (!geoJson.results?.length) throw new Error('No geocoding results');
-    // lat, lng are not used elsewhere
-
-    // findPlaceFromText to get place_id
-    const findRes = await fetch(
-        `https://maps.googleapis.com/maps/api/place/findplacefromtext/json` +
-        `?input=${encodeURIComponent(name + ' ' + address)}` +
-        `&inputtype=textquery&fields=place_id&key=${process.env.GOOGLE_API_KEY}`
-    );
-    const findJson = await findRes.json();
-    if (!findJson.candidates?.length) throw new Error('No place_id found');
-    const placeId = findJson.candidates[0].place_id;
-
-    // details to get photo_reference
-    const detailRes = await fetch(
-        `https://maps.googleapis.com/maps/api/place/details/json` +
-        `?place_id=${placeId}&fields=photos&key=${process.env.GOOGLE_API_KEY}`
-    );
-    const detailJson = await detailRes.json();
-    const photoRef = detailJson.result.photos?.[0]?.photo_reference;
-    if (!photoRef) throw new Error('No photo available');
-
-    return `https://maps.googleapis.com/maps/api/place/photo?maxwidth=800&photoreference=${photoRef}&key=${process.env.GOOGLE_API_KEY}`;
-}
-
-async function fetchAddressFromGoogle(venueName) {
-    try {
-        // Correct name via geocodingExceptions if present
-        const correctedName = geocodingExceptions[venueName] || venueName;
-        const response = await fetch(`https://maps.googleapis.com/maps/api/geocode/json?address=${encodeURIComponent(correctedName)}&key=${googleApiKey}`);
-        const data = await response.json();
-        if (data.status === "OK" && data.results && data.results.length > 0) {
-            return data.results[0];
-        } else {
-            console.error("Google Geocoding API error or no results:", data.status);
-        }
-    } catch (err) {
-        console.error("Error fetching address from Google:", err);
-    }
-    return null;
-}
-
-async function fetchAddressFromNominatim(lat, lon) {
-    try {
-        const response = await fetch(`https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lon}`);
-        const data = await response.json();
-        if (data && data.display_name) {
-            return data;
-        } else {
-            console.error("Nominatim reverse geocoding returned no result");
-        }
-    } catch (err) {
-        console.error("Error fetching address from Nominatim:", err);
-    }
-    return null;
-}
-
-// --- Promoters Management ---
-/**
- * Finds or inserts a promoter, then returns { id, name, image_url }.
- */
-async function findOrInsertPromoter(promoterName, eventData) {
-    const normalizedName = getNormalizedName(promoterName);
-
-    // 1) Exact match on the name
-    const { data: exactMatches, error: exactError } = await supabase
-        .from('promoters')
-        .select('id, name, image_url')
-        .eq('name', normalizedName);
-    if (exactError) throw exactError;
-
-    if (exactMatches && exactMatches.length > 0) {
-        const p = exactMatches[0];
-        console.log(`➡️ Promoter "${promoterName}" found (exact) → id=${p.id}`);
-        return { id: p.id, name: p.name, image_url: p.image_url };
-    }
-
-    // 2) Fuzzy match against all existing promoters
-    const { data: allPromoters, error: allError } = await supabase
-        .from('promoters')
-        .select('id, name, image_url');
-    if (allError) throw allError;
-
-    if (allPromoters && allPromoters.length > 0) {
-        const names = allPromoters.map(p => p.name.toLowerCase());
-        const { bestMatch, bestMatchIndex } = stringSimilarity.findBestMatch(
-            normalizedName.toLowerCase(),
-            names
-        );
-        if (bestMatch.rating >= FUZZY_THRESHOLD) {
-            const p = allPromoters[bestMatchIndex];
-            console.log(
-                `➡️ Promoter "${promoterName}" similar to "${p.name}" → id=${p.id}`
-            );
-            return { id: p.id, name: p.name, image_url: p.image_url };
-        }
-    }
-
-    // 3) Insertion of a new promoter
-    console.log(`➡️ Inserting a new promoter "${promoterName}"…`);
-    const promoterSource = eventData.hosts.find(h => h.name === promoterName);
-    const newPromoterData = { name: normalizedName };
-
-    // try to get a high-resolution image via Facebook Graph
-    if (promoterSource?.id) {
-        const highRes = await fetchHighResImage(promoterSource.id);
-        if (highRes) newPromoterData.image_url = highRes;
-    }
-
-    // fallback to photo.imageUri if available
-    if (!newPromoterData.image_url && promoterSource?.photo?.imageUri) {
-        newPromoterData.image_url = promoterSource.photo.imageUri;
-    }
-
-    const { data: inserted, error: insertError } = await supabase
-        .from('promoters')
-        .insert(newPromoterData)
-        .select('id, name, image_url');
-    if (insertError || !inserted || inserted.length === 0) {
-        throw insertError || new Error('Promoter insertion failed');
-    }
-
-    const created = inserted[0];
-    console.log(
-        `✅ Promoter inserted: "${promoterName}" → id=${created.id}`
-    );
-    return {
-        id: created.id,
-        name: created.name,
-        image_url: created.image_url ?? null
-    };
-}
 
 /**
  * For a promoter, deduces their genres via their events.
@@ -452,37 +314,6 @@ async function assignEventGenres(eventId) {
     return topGenreIds;
 }
 
-// --- Generic Utilities ---
-
-/**
- * Calculates the distance between two GPS coordinates.
- */
-function haversineDistance(lat1, lon1, lat2, lon2) {
-    const R = 6371000; // Earth's radius in meters
-    const toRad = (x) => (x * Math.PI) / 180;
-    const dLat = toRad(lat2 - lat1);
-    const dLon = toRad(lon2 - lon1);
-    const a =
-        Math.sin(dLat / 2) ** 2 +
-        Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) *
-        Math.sin(dLon / 2) ** 2;
-    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-    return R * c;
-}
-
-async function fetchHighResImage(objectId) {
-    try {
-        const response = await fetch(`https://graph.facebook.com/${objectId}?fields=picture.width(720).height(720)&access_token=${longLivedToken}`);
-        const data = await response.json();
-        if (data.picture && data.picture.data && data.picture.data.url) {
-            return data.picture.data.url;
-        }
-    } catch (err) {
-        console.error("Error fetching high resolution image:", err);
-    }
-    return null;
-}
-
 async function ensureRelation(table, relationData, relationName) {
     const { data, error } = await supabase
         .from(table)
@@ -533,12 +364,12 @@ async function main() {
 
         if (!venueAddress && venueName) {
             console.log(`\n🔍 No address found from Facebook for venue "${venueName}". Querying Google Maps...`);
-            const googleResult = await fetchAddressFromGoogle(venueName);
+            const googleResult = await venueModel.fetchAddressFromGoogle(venueName, googleApiKey, geocodingExceptions);
             if (googleResult) {
                 const googleLat = googleResult.geometry.location.lat;
                 const googleLng = googleResult.geometry.location.lng;
                 if (venueLatitude && venueLongitude) {
-                    const distance = haversineDistance(venueLatitude, venueLongitude, googleLat, googleLng);
+                    const distance = geoUtils.haversineDistance(venueLatitude, venueLongitude, googleLat, googleLng);
                     console.log(`Distance between FB and Google: ${distance.toFixed(2)} meters`);
                     const threshold = 500;
                     if (distance < threshold) {
@@ -554,7 +385,7 @@ async function main() {
             }
             if (!venueAddress && venueLatitude && venueLongitude) {
                 console.log(`\n🔍 No address from Google. Querying Nominatim reverse geocoding for coordinates ${venueLatitude}, ${venueLongitude}...`);
-                const nominatimResult = await fetchAddressFromNominatim(venueLatitude, venueLongitude);
+                const nominatimResult = await geoUtils.fetchAddressFromNominatim(venueLatitude, venueLongitude);
                 if (nominatimResult) {
                     venueAddress = nominatimResult.display_name;
                     console.log(`✅ Using Nominatim address: ${venueAddress}`);
@@ -575,7 +406,7 @@ async function main() {
             if (DRY_RUN) {
                 console.log(`(DRY_RUN) Would find/insert promoter: "${promoterName}"`);
             } else {
-                info = await findOrInsertPromoter(promoterName, eventData);
+                info = await promoterModel.findOrInsertPromoter(supabase, promoterName, eventData);
             }
             promoterInfos.push(info);
         }
@@ -678,7 +509,7 @@ async function main() {
 
                             if (!newVenueData.image_url) {
                                 try {
-                                    const photoUrl = await fetchGoogleVenuePhoto(venueName, venueAddress);
+                                    const photoUrl = await venueModel.fetchGoogleVenuePhoto(venueName, venueAddress);
                                     newVenueData.image_url = photoUrl;
                                     console.log(`✅ image_url obtained via Google Maps for "${normalizedVenueName}"`);
                                 } catch (err) {
@@ -918,7 +749,7 @@ ${eventDescription}
                 }
                 let artistId = null;
                 try {
-                    artistId = await artistUtils.findOrInsertArtist(supabase, artistObj);
+                    artistId = await artistModel.findOrInsertArtist(supabase, artistObj);
                 } catch (e) {
                     console.error(`❌ Error processing artist "${artistName}":`, e);
                 }
