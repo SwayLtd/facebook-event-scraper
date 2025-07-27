@@ -10,7 +10,7 @@ import { normalizeNameEnhanced, getNormalizedName } from './utils/name.js';
 
 // Import models
 import artistModel from './models/artist.js';
-import genreModel from './utils/genre.js';
+import genreModel from './models/genre.js';
 import promoterModel from './models/promoter.js';
 import venueModel from './models/venue.js';
 

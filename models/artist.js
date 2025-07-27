@@ -4,7 +4,7 @@
 import { normalizeNameEnhanced } from '../utils/name.js';
 import { normalizeExternalLinks } from '../utils/social.js';
 import { getAccessToken } from '../utils/token.js';
-import { processArtistGenres, linkArtistGenre, insertGenreIfNew } from './genre.js';
+import genreModel from './genre.js';
 import fetch from 'node-fetch';
 
 async function getBestImageUrl(avatarUrl) {
@@ -136,14 +136,14 @@ async function findOrInsertArtist(supabase, artistObj) {
 
     // 7. Processing and linking genres
     try {
-        const genres = await processArtistGenres(supabase, inserted[0]);
+        const genres = await genreModel.processArtistGenres(supabase, inserted[0]);
         for (const genreObj of genres) {
             if (genreObj.id) {
-                await linkArtistGenre(supabase, newArtistId, genreObj.id);
+                await genreModel.linkArtistGenre(supabase, newArtistId, genreObj.id);
                 console.log(`   ↳ Linked artist to forced genre_id=${genreObj.id}`);
             } else {
-                const genreId = await insertGenreIfNew(supabase, genreObj);
-                await linkArtistGenre(supabase, newArtistId, genreId);
+                const genreId = await genreModel.insertGenreIfNew(supabase, genreObj);
+                await genreModel.linkArtistGenre(supabase, newArtistId, genreId);
                 console.log(`   ↳ Linked artist to genre_id=${genreId}`);
             }
         }

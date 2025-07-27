@@ -2,7 +2,7 @@ import 'dotenv/config';  // Load environment variables from a .env file if prese
 
 import stringSimilarity from 'string-similarity';
 import { getNormalizedName } from '../utils/name.js';
-import { ensureRelation } from '../utils/database.js';
+import databaseUtils from '../utils/database.js';
 import { FUZZY_THRESHOLD, MIN_GENRE_OCCURRENCE } from '../utils/constants.js';
 
 const longLivedToken = process.env.LONG_LIVED_TOKEN;  // Facebook Graph API token
@@ -167,7 +167,7 @@ async function assignPromoterGenres(supabase, promoterId, bannedGenreIds) {
 
     // 5) Save in promoter_genre
     for (const genreId of topGenreIds) {
-        await ensureRelation(
+        await databaseUtils.ensureRelation(
             supabase,
             "promoter_genre",
             { promoter_id: promoterId, genre_id: genreId },

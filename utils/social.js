@@ -63,7 +63,7 @@ async function fetchHighResImage(objectId, longLivedToken) {
 }
 
 
-export default {
+export {
     normalizeSocialLink,
     normalizeExternalLinks,
     fetchHighResImage,

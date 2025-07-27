@@ -16,4 +16,4 @@ function getNormalizedName(originalName, geocodingExceptions = {}) {
     return originalName;
 }
 
-export default { normalizeNameEnhanced, getNormalizedName };
+export { normalizeNameEnhanced, getNormalizedName };

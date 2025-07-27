@@ -2,7 +2,7 @@
 // Utility functions for genres
 
 import fetch from 'node-fetch';
-import { ensureRelation } from '../utils/database.js';
+import databaseUtils from '../utils/database.js';
 import { MIN_GENRE_OCCURRENCE } from '../utils/constants.js';
 import { getAccessToken } from '../utils/token.js';
 
@@ -375,7 +375,7 @@ async function assignEventGenres(supabase, eventId, bannedGenreIds) {
     }
 
     for (const genreId of topGenreIds) {
-        await ensureRelation(
+        await databaseUtils.ensureRelation(
             supabase,
             "event_genre",
             { event_id: eventId, genre_id: genreId },

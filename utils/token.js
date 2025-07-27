@@ -56,8 +56,4 @@ async function getAccessToken(clientId, clientSecret) {
     }
 }
 
-export default {
-    getStoredToken,
-    storeToken,
-    getAccessToken,
-};
+export { getStoredToken, storeToken, getAccessToken };
