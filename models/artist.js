@@ -6,6 +6,7 @@ import { normalizeExternalLinks } from '../utils/social.js';
 import { getAccessToken } from '../utils/token.js';
 import genreModel from './genre.js';
 import fetch from 'node-fetch';
+import stringSimilarity from 'string-similarity';
 
 async function getBestImageUrl(avatarUrl) {
     if (!avatarUrl) return null;
@@ -18,14 +19,15 @@ async function getBestImageUrl(avatarUrl) {
 }
 
 /**
- * Searches for an artist on SoundCloud.
+ * Searches for an artist on SoundCloud using robust scoring (name similarity, followers, position).
  * @param {string} artistName - The name of the artist.
  * @param {string} accessToken - The SoundCloud access token.
- * @returns {Promise<object|null>}
+ * @returns {Promise<object|null>} Best match artist object or null.
  */
 async function searchArtist(artistName, accessToken) {
     try {
-        const url = `https://api.soundcloud.com/users?q=${encodeURIComponent(artistName)}&limit=1`;
+        const normName = normalizeNameEnhanced(artistName);
+        const url = `https://api.soundcloud.com/users?q=${encodeURIComponent(normName)}&limit=10`;
         const response = await fetch(url, {
             headers: { "Authorization": `OAuth ${accessToken}` }
         });
@@ -34,7 +36,31 @@ async function searchArtist(artistName, accessToken) {
             console.log(`No SoundCloud artist found for: ${artistName}`);
             return null;
         }
-        return data[0];
+        // --- Composite scoring ---
+        let bestMatch = null;
+        let bestScore = 0;
+        const maxFollowers = Math.max(...data.map(u => u.followers_count || 0), 1);
+        data.forEach((user, idx) => {
+            const userNorm = normalizeNameEnhanced(user.username);
+            const nameScore = stringSimilarity.compareTwoStrings(normName.toLowerCase(), userNorm.toLowerCase());
+            const followers = user.followers_count || 0;
+            const followersScore = Math.log10(followers + 1) / Math.log10(maxFollowers + 1);
+            const positionScore = 1 - (idx / data.length);
+            const score = (nameScore * 0.6) + (followersScore * 0.3) + (positionScore * 0.1);
+            // Debug log (optional)
+            // console.log(`Candidate: ${user.username} | name: ${nameScore.toFixed(2)} | followers: ${followers} | followersScore: ${followersScore.toFixed(2)} | pos: ${idx + 1} | score: ${score.toFixed(3)}`);
+            if (score > bestScore) {
+                bestScore = score;
+                bestMatch = user;
+            }
+        });
+        if (bestMatch && bestScore > 0.6) {
+            // console.log(`Best SoundCloud match for "${artistName}": ${bestMatch.username} (score: ${bestScore.toFixed(3)})`);
+            return bestMatch;
+        } else {
+            // console.log(`No sufficient match found for "${artistName}" (best score: ${bestScore.toFixed(3)})`);
+            return null;
+        }
     } catch (error) {
         console.error("Error searching for artist on SoundCloud:", error);
         return null;
