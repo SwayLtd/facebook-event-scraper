@@ -7,11 +7,12 @@ import { createClient } from '@supabase/supabase-js';
 import NodeGeocoder from 'node-geocoder';
 
 import { normalizeNameEnhanced, getNormalizedName } from './utils/name.js';
-import { getBestImageUrl } from './utils/artist.js';
+
 import { normalizeExternalLinks } from './utils/social.js';
 import { refineGenreName, splitCompoundTags, slugifyGenre, cleanDescription } from './utils/genre.js';
 import tokenUtils from './utils/token.js';
 import OpenAI from 'openai';
+import artistUtils from './models/artist.js';
 
 // --- Global Parameters ---
 const DRY_RUN = false; // Set true for dry-run mode (no DB writes)
@@ -343,7 +344,7 @@ async function findOrInsertArtist(artistObj) {
     let artistData;
     if (scArtist) {
         // If found on SC, extract enriched info
-        artistData = await extractArtistInfo(scArtist);
+        artistData = await artistUtils.extractArtistInfo(scArtist);
     } else {
         // Otherwise minimal fallback
         artistData = {
@@ -429,25 +430,6 @@ async function searchArtist(artistName, accessToken) {
         console.error("Error searching for artist on SoundCloud:", error);
         return null;
     }
-}
-
-async function extractArtistInfo(artist) {
-    const bestImageUrl = await getBestImageUrl(artist.avatar_url);
-    return {
-        name: artist.username,
-        image_url: bestImageUrl,
-        description: artist.description,
-        location_info: {
-            country: artist.country || null,
-            city: artist.city || null
-        },
-        external_links: {
-            soundcloud: {
-                link: artist.permalink_url,
-                id: String(artist.id)
-            }
-        }
-    };
 }
 
 async function createEventArtistRelation(eventId, artistId, artistObj) {
