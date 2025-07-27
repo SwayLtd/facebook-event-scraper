@@ -8,9 +8,7 @@ import NodeGeocoder from 'node-geocoder';
 
 import { normalizeNameEnhanced, getNormalizedName } from './utils/name.js';
 
-import { normalizeExternalLinks } from './utils/social.js';
-import { refineGenreName, splitCompoundTags, slugifyGenre, cleanDescription } from './utils/genre.js';
-import tokenUtils from './utils/token.js';
+import { refineGenreName } from './utils/genre.js';
 import OpenAI from 'openai';
 import artistUtils from './models/artist.js';
 
@@ -30,7 +28,6 @@ const openAIApiKey = process.env.OPENAI_API_KEY;      // OpenAI key
 const SOUND_CLOUD_CLIENT_ID = process.env.SOUND_CLOUD_CLIENT_ID;
 const SOUND_CLOUD_CLIENT_SECRET = process.env.SOUND_CLOUD_CLIENT_SECRET;
 const LASTFM_API_KEY = process.env.LASTFM_API_KEY;    // To validate tags/genres via Last.fm
-const TOKEN_URL = 'https://api.soundcloud.com/oauth2/token';
 
 // Basic checks
 if (!supabaseUrl || !serviceKey) {
@@ -92,26 +89,6 @@ async function getBannedGenreIds() {
 }
 
 let bannedGenreIds = [];
-
-// --- SoundCloud Token Management ---
-async function getAccessToken() {
-    let token = await tokenUtils.getStoredToken();
-    if (token) return token;
-    try {
-        const response = await fetch(`${TOKEN_URL}?client_id=${SOUND_CLOUD_CLIENT_ID}&client_secret=${SOUND_CLOUD_CLIENT_SECRET}&grant_type=client_credentials`, {
-            method: 'POST'
-        });
-        const data = await response.json();
-        token = data.access_token;
-        const expiresIn = data.expires_in || 3600;
-        console.log("[SoundCloud] Access token obtained:", token);
-        await tokenUtils.storeToken(token, expiresIn);
-        return token;
-    } catch (error) {
-        console.error("[SoundCloud] Error obtaining access token:", error);
-        return null;
-    }
-}
 
 // --- Venues Management ---
 /**
@@ -325,112 +302,6 @@ async function assignPromoterGenres(promoterId) {
 }
 
 // --- Artists Management ---
-async function findOrInsertArtist(artistObj) {
-    // artistObj: { name, time, soundcloud, stage, performance_mode }
-    let artistName = (artistObj.name || '').trim();
-    if (!artistName) return null;
-
-    // 1. Name normalization
-    artistName = normalizeNameEnhanced(artistName);
-
-    // 2. Search on SoundCloud
-    const token = await getAccessToken();
-    let scArtist = null;
-    if (token) {
-        scArtist = await searchArtist(artistName, token);
-    }
-
-    // 3. Construction of the artistData object
-    let artistData;
-    if (scArtist) {
-        // If found on SC, extract enriched info
-        artistData = await artistUtils.extractArtistInfo(scArtist);
-    } else {
-        // Otherwise minimal fallback
-        artistData = {
-            name: artistName,
-            external_links: artistObj.soundcloud
-                ? { soundcloud: { link: artistObj.soundcloud } }
-                : null,
-        };
-    }
-    // --- Social link normalization ---
-    if (artistData.external_links) {
-        artistData.external_links = normalizeExternalLinks(artistData.external_links);
-    }
-
-    // 4. Duplicate detection via SoundCloud link
-    if (artistData.external_links?.soundcloud?.id) {
-        const { data: existingByExternal, error: extError } = await supabase
-            .from('artists')
-            .select('id')
-            .eq('external_links->soundcloud->>id', artistData.external_links.soundcloud.id);
-        if (extError) throw extError;
-        if (existingByExternal.length > 0) {
-            console.log(`➡️ Artist exists by external link: "${artistName}" (id=${existingByExternal[0].id})`);
-            return existingByExternal[0].id;
-        }
-    }
-
-    // 5. Duplicate detection via name
-    const { data: existingByName, error: nameError } = await supabase
-        .from('artists')
-        .select('id')
-        .ilike('name', artistName);
-    if (nameError) throw nameError;
-    if (existingByName.length > 0) {
-        console.log(`➡️ Artist exists by name: "${artistName}" (id=${existingByName[0].id})`);
-        return existingByName[0].id;
-    }
-
-    // 6. Insertion of the new artist
-    const { data: inserted, error: insertError } = await supabase
-        .from('artists')
-        .insert(artistData)
-        .select();
-    if (insertError || !inserted) throw insertError || new Error("Could not insert artist");
-    const newArtistId = inserted[0].id;
-    console.log(`✅ Artist inserted: "${artistName}" (id=${newArtistId})`);
-
-    // 7. Processing and linking genres
-    try {
-        const genres = await processArtistGenres(inserted[0]);
-        for (const genreObj of genres) {
-            if (genreObj.id) {
-                // ✨ DnB alias detected → direct link to the forced ID (437)
-                await linkArtistGenre(newArtistId, genreObj.id);
-                console.log(`   ↳ Linked artist to forced genre_id=${genreObj.id}`);
-            } else {
-                // Normal workflow for other genres
-                const genreId = await insertGenreIfNew(genreObj);
-                await linkArtistGenre(newArtistId, genreId);
-                console.log(`   ↳ Linked artist to genre_id=${genreId}`);
-            }
-        }
-    } catch (err) {
-        console.error("❌ Error processing genres for artist:", artistName, err);
-    }
-
-    return newArtistId;
-}
-
-async function searchArtist(artistName, accessToken) {
-    try {
-        const url = `https://api.soundcloud.com/users?q=${encodeURIComponent(artistName)}&limit=1`;
-        const response = await fetch(url, {
-            headers: { "Authorization": `OAuth ${accessToken}` }
-        });
-        const data = await response.json();
-        if (!data || data.length === 0) {
-            console.log(`No SoundCloud artist found for: ${artistName}`);
-            return null;
-        }
-        return data[0];
-    } catch (error) {
-        console.error("Error searching for artist on SoundCloud:", error);
-        return null;
-    }
-}
 
 async function createEventArtistRelation(eventId, artistId, artistObj) {
     if (!artistId) return;
@@ -510,257 +381,6 @@ async function createEventArtistRelation(eventId, artistId, artistObj) {
 }
 
 // --- Genres Management ---
-/**
- * Fetches artist tracks from SoundCloud based on the SoundCloud user ID.
- */
-async function fetchArtistTracks(soundcloudUserId, token) {
-    try {
-        const url = `https://api.soundcloud.com/users/${soundcloudUserId}/tracks?limit=10`;
-        const response = await fetch(url, {
-            headers: { "Authorization": `OAuth ${token}` }
-        });
-        const data = await response.json();
-        if (!Array.isArray(data)) {
-            console.error(`[Genres] Expected tracks to be an array but got: ${JSON.stringify(data)}`);
-            return [];
-        }
-        // console.log(`[Genres] Fetched ${data.length} tracks for SoundCloud user ${soundcloudUserId}`);
-        return data;
-    } catch (error) {
-        console.error("[Genres] Error fetching artist tracks from SoundCloud:", error);
-        return [];
-    }
-}
-
-/**
- * Checks via Last.fm if the tag corresponds to a musical genre.
- * Returns { valid, name, description, lastfmUrl }.
- * Only allows if the description contains "genre" or "sub-genre"/"subgenre"
- * or "<name> music", and rejects if it contains "umbrella term"
- * or if the name is a single letter.
- */
-async function verifyGenreWithLastFM(tagName) {
-    // reject single-letter names
-    if (tagName.length === 1) {
-        return { valid: false };
-    }
-
-    try {
-        const url = `http://ws.audioscrobbler.com/2.0/?method=tag.getinfo&tag=${encodeURIComponent(tagName)}&api_key=${LASTFM_API_KEY}&format=json`;
-        const response = await fetch(url);
-        const data = await response.json();
-        if (!data?.tag) return { valid: false };
-
-        // Initial cleaning and summary extraction
-        const rawSummary = data.tag.wiki?.summary || "";
-        const description = cleanDescription(rawSummary);
-        if (!description) return { valid: false };
-
-        const lowerDesc = description.toLowerCase();
-        const lowerTag = tagName.toLowerCase();
-
-        // Acceptance conditions
-        const hasGenreWord = /(genre|sub-genre|subgenre)/.test(lowerDesc);
-        const hasMusicPhrase = new RegExp(`${lowerTag}\\s+music`).test(lowerDesc);
-        const isUmbrella = /umbrella term/.test(lowerDesc);
-
-        if (isUmbrella || !(hasGenreWord || hasMusicPhrase)) {
-            return { valid: false };
-        }
-
-        // Extraction of the tag URL
-        let lastfmUrl = data.tag.url || "";
-        const linkMatch = rawSummary.match(/<a href="([^"]+)"/);
-        if (linkMatch?.[1]) lastfmUrl = linkMatch[1];
-
-        return {
-            valid: true,
-            name: data.tag.name.toLowerCase(),
-            description,
-            lastfmUrl
-        };
-    } catch (error) {
-        console.error("[Genres] Error verifying genre with Last.fm for tag:", tagName, error);
-        return { valid: false };
-    }
-}
-
-/**
- * Inserts the genre into the "genres" table if it does not already exist.
- * First, it checks via the URL in external_links; if nothing is found, it checks by name.
- * Returns the genre ID.
- */
-async function insertGenreIfNew(genreObject) {
-    const { name, description, lastfmUrl } = genreObject;
-    // We work here with the original name for refinement
-    const normalizedName = name.toLowerCase();
-    const genreSlug = slugifyGenre(normalizedName);
-
-    // Get all existing genres (to detect a duplicate by slug or external link)
-    let { data: existingGenres, error: selectError } = await supabase
-        .from('genres')
-        .select('id, name, external_links');
-    if (selectError) {
-        console.error("[Genres] Error selecting genre:", selectError);
-        throw selectError;
-    }
-
-    let duplicateGenre = null;
-    // Check by external_links if available
-    if (lastfmUrl) {
-        duplicateGenre = existingGenres.find(g => g.external_links &&
-            g.external_links.lastfm &&
-            g.external_links.lastfm.link === lastfmUrl);
-    }
-    // Otherwise, check by the name's slug
-    if (!duplicateGenre) {
-        duplicateGenre = existingGenres.find(g => slugifyGenre(g.name) === genreSlug);
-    }
-    if (duplicateGenre) {
-        console.log(`[Genres] Genre "${name}" already exists with ID ${duplicateGenre.id}`);
-        return duplicateGenre.id;
-    }
-
-    let externalLinks = null;
-    if (lastfmUrl) {
-        externalLinks = { lastfm: { link: lastfmUrl } };
-    }
-    // Use refineGenreName to get the desired display title
-    const finalName = refineGenreName(name);
-    const { data: newGenre, error: insertError } = await supabase
-        .from('genres')
-        .insert({ name: finalName, description, external_links: externalLinks })
-        .select();
-    if (insertError || !newGenre) {
-        console.error("[Genres] Error inserting genre:", insertError);
-        throw insertError || new Error("Genre insertion failed");
-    }
-    console.log(`[Genres] Genre inserted: ${finalName} (id=${newGenre[0].id}) with description: ${description} and external_links: ${JSON.stringify(externalLinks)}`);
-    return newGenre[0].id;
-}
-
-/**
- * Links an artist to a genre in the "artist_genre" pivot table.
- */
-async function linkArtistGenre(artistId, genreId) {
-    const { data, error } = await supabase
-        .from('artist_genre')
-        .select('*')
-        .match({ artist_id: artistId, genre_id: genreId });
-    if (error) throw error;
-    if (!data || data.length === 0) {
-        const { error: insertError } = await supabase
-            .from('artist_genre')
-            .insert({ artist_id: artistId, genre_id: genreId });
-        if (insertError) throw insertError;
-        console.log(`[Genres] Linked artist (id=${artistId}) to genre (id=${genreId}).`);
-    } else {
-        console.log(`[Genres] Artist (id=${artistId}) already linked to genre (id=${genreId}).`);
-    }
-}
-
-/**
- * Extracts and normalizes tags from a track.
- * It uses the "genre" and "tag_list" fields. Returns an array of lowercase tags.
- */
-function extractTagsFromTrack(track) {
-    let tags = [];
-    if (track.genre) {
-        tags.push(track.genre.toLowerCase().trim());
-    }
-    if (track.tag_list) {
-        const rawTags = track.tag_list.split(/\s+/);
-        rawTags.forEach(tag => {
-            tag = tag.replace(/^#/, "").toLowerCase().trim();
-            if (tag && !tags.includes(tag)) {
-                tags.push(tag);
-            }
-        });
-    }
-    console.log(`[Genres] For track "${track.title || 'unknown'}", extracted tags: ${JSON.stringify(tags)}`);
-    return tags;
-}
-
-/**
- * For an artist, uses the SoundCloud API to retrieve their tracks,
- * extracts the tags, and checks via Last.fm which ones correspond to musical genres.
- * Returns an array of validated genre objects.
- */
-async function processArtistGenres(artistData) {
-    const genresFound = [];
-
-    // 1) Check that the artist has a SoundCloud link
-    if (
-        !artistData.external_links ||
-        !artistData.external_links.soundcloud ||
-        !artistData.external_links.soundcloud.id
-    ) {
-        console.log(`[Genres] No SoundCloud external link for "${artistData.name}"`);
-        return genresFound;
-    }
-
-    // 2) Get the tracks
-    const soundcloudUserId = artistData.external_links.soundcloud.id;
-    const token = await getAccessToken();
-    if (!token) {
-        console.log("[Genres] No SoundCloud token available");
-        return genresFound;
-    }
-    const tracks = await fetchArtistTracks(soundcloudUserId, token);
-
-    // 3) Extract and deduplicate all tags
-    let allTags = [];
-    for (const track of tracks) {
-        const tags = extractTagsFromTrack(track);
-        let splitted = [];
-        tags.forEach(t => { splitted = splitted.concat(splitCompoundTags(t)); });
-        allTags = allTags.concat(splitted.filter(t => /[a-zA-Z]/.test(t)));
-    }
-    allTags = Array.from(new Set(allTags));
-
-    // 4) Alias DnB → genre_id 437
-    const aliasTagIds = {
-        'dnb': 437,
-        'drumnbass': 437,
-        "drum'n'bass": 437,
-        'drumandbass': 437,
-    };
-
-    // 5) Go through each tag
-    for (const rawTag of allTags) {
-        const tag = rawTag.toLowerCase().trim();
-
-        // 5a) If alias, force ID 437
-        if (aliasTagIds[tag]) {
-            const id = aliasTagIds[tag];
-            console.log(`[Genres] Alias DnB detected ("${tag}") → forcing genre_id ${id}`);
-            if (!genresFound.some(g => g.id === id)) {
-                genresFound.push({ id });
-            }
-            continue;
-        }
-
-        // 5b) Otherwise, validation via Last.fm
-        console.log(`[Genres] Verifying "${tag}" via Last.fm…`);
-        const v = await verifyGenreWithLastFM(tag);
-        if (v.valid && v.description) {
-            const slug = slugifyGenre(v.name);
-            if (!bannedGenres.includes(slug)) {
-                genresFound.push({
-                    name: v.name,
-                    description: v.description,
-                    lastfmUrl: v.lastfmUrl
-                });
-            } else {
-                console.log(`[Genres] Skipping generic genre "${v.name}".`);
-            }
-        } else {
-            console.log(`[Genres] Skipping invalid or too-short tag "${tag}".`);
-        }
-    }
-
-    return genresFound;
-}
 
 /**
  * Deduces the genres of an event from the artists participating in it.
@@ -1298,7 +918,7 @@ ${eventDescription}
                 }
                 let artistId = null;
                 try {
-                    artistId = await findOrInsertArtist(artistObj);
+                    artistId = await artistUtils.findOrInsertArtist(supabase, artistObj);
                 } catch (e) {
                     console.error(`❌ Error processing artist "${artistName}":`, e);
                 }
