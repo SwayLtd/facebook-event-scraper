@@ -355,40 +355,21 @@ async function assignEventGenres(supabase, eventId, bannedGenreIds) {
         .slice(0, 5)
         .map(([genreId]) => Number(genreId));
 
+    // Fallback: always attempt to assign top 3 non-banned genres, even if genreCounts is empty
     if (topGenreIds.length === 0) {
-        // Fallback: top 3 genres des artistes sans seuil
         topGenreIds = Object.entries(genreCounts)
             .filter(([genreId]) => !bannedGenreIds.includes(Number(genreId)))
             .sort(([, a], [, b]) => b - a)
             .slice(0, 3)
             .map(([genreId]) => Number(genreId));
 
-        // Si toujours aucun genre, fallback sur les genres des promoteurs liés
         if (topGenreIds.length === 0) {
-            const { data: eventPromoters, error: epError } = await supabase
-                .from('event_promoter')
-                .select('promoter_id')
-                .eq('event_id', eventId);
-            if (epError) throw epError;
-            let promoterGenreIds = [];
-            for (const { promoter_id } of eventPromoters) {
-                const { data: promoterGenres, error: pgError } = await supabase
-                    .from('promoter_genre')
-                    .select('genre_id')
-                    .eq('promoter_id', promoter_id);
-                if (pgError) throw pgError;
-                promoterGenreIds = promoterGenreIds.concat(promoterGenres.map(g => g.genre_id));
-            }
-            // Filtre les genres bannis et duplique pas
-            topGenreIds = Array.from(new Set(promoterGenreIds.filter(gid => !bannedGenreIds.includes(Number(gid))))).slice(0, 3);
             console.log(
-                `[Genres] No genre found via artists for event ${eventId}, fallback to promoter genres:`,
-                topGenreIds
+                `[Genres] No artist genre found for event ${eventId}, fallback is empty.`
             );
         } else {
             console.log(
-                `[Genres] No genre ≥ ${MIN_GENRE_OCCURRENCE} non-banned occurrences for event ${eventId}, ` +
-                `fallback top 3 without threshold:`,
+                `[Genres] No genre ≥ ${MIN_GENRE_OCCURRENCE} non-banned occurrences for event ${eventId}, fallback to top 3 non-banned genres:`,
                 topGenreIds
             );
         }
