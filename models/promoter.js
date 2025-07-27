@@ -39,12 +39,36 @@ async function findOrInsertPromoter(supabase, promoterName, eventData) {
     // 1) Exact match on the name
     const { data: exactMatches, error: exactError } = await supabase
         .from('promoters')
-        .select('id, name, image_url')
+        .select('id, name, image_url, external_links')
         .eq('name', normalizedName);
     if (exactError) throw exactError;
 
+    const promoterSource = eventData.hosts.find(h => h.name === promoterName);
+    // Prépare l'objet external_links Facebook
+    let facebookLinks = null;
+    if (promoterSource?.id && promoterSource?.url) {
+        facebookLinks = {
+            facebook: {
+                id: promoterSource.id,
+                link: promoterSource.url
+            }
+        };
+    }
+
     if (exactMatches && exactMatches.length > 0) {
         const p = exactMatches[0];
+        // Si external_links n'a pas les infos Facebook, on les ajoute
+        if (facebookLinks && (!p.external_links || !p.external_links.facebook)) {
+            const { error: updateError } = await supabase
+                .from('promoters')
+                .update({ external_links: { ...p.external_links, ...facebookLinks } })
+                .eq('id', p.id);
+            if (updateError) {
+                console.error('Error updating promoter external_links:', updateError);
+            } else {
+                console.log(`✅ Updated promoter external_links for id=${p.id}`);
+            }
+        }
         console.log(`➡️ Promoter "${promoterName}" found (exact) → id=${p.id}`);
         return { id: p.id, name: p.name, image_url: p.image_url };
     }
@@ -52,7 +76,7 @@ async function findOrInsertPromoter(supabase, promoterName, eventData) {
     // 2) Fuzzy match against all existing promoters
     const { data: allPromoters, error: allError } = await supabase
         .from('promoters')
-        .select('id, name, image_url');
+        .select('id, name, image_url, external_links');
     if (allError) throw allError;
 
     if (allPromoters && allPromoters.length > 0) {
@@ -63,6 +87,18 @@ async function findOrInsertPromoter(supabase, promoterName, eventData) {
         );
         if (bestMatch.rating >= FUZZY_THRESHOLD) {
             const p = allPromoters[bestMatchIndex];
+            // Si external_links n'a pas les infos Facebook, on les ajoute
+            if (facebookLinks && (!p.external_links || !p.external_links.facebook)) {
+                const { error: updateError } = await supabase
+                    .from('promoters')
+                    .update({ external_links: { ...p.external_links, ...facebookLinks } })
+                    .eq('id', p.id);
+                if (updateError) {
+                    console.error('Error updating promoter external_links:', updateError);
+                } else {
+                    console.log(`✅ Updated promoter external_links for id=${p.id}`);
+                }
+            }
             console.log(
                 `➡️ Promoter "${promoterName}" similar to "${p.name}" → id=${p.id}`
             );
@@ -72,7 +108,6 @@ async function findOrInsertPromoter(supabase, promoterName, eventData) {
 
     // 3) Insertion of a new promoter
     console.log(`➡️ Inserting a new promoter "${promoterName}"…`);
-    const promoterSource = eventData.hosts.find(h => h.name === promoterName);
     const newPromoterData = { name: normalizedName };
 
     // try to get a high-resolution image via Facebook Graph
@@ -84,6 +119,11 @@ async function findOrInsertPromoter(supabase, promoterName, eventData) {
     // fallback to photo.imageUri if available
     if (!newPromoterData.image_url && promoterSource?.photo?.imageUri) {
         newPromoterData.image_url = promoterSource.photo.imageUri;
+    }
+
+    // Ajoute external_links Facebook si dispo
+    if (facebookLinks) {
+        newPromoterData.external_links = facebookLinks;
     }
 
     const { data: inserted, error: insertError } = await supabase
