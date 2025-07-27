@@ -490,8 +490,6 @@ async function main() {
                     .trim();
                 parsedArtists = JSON.parse(artistsJSON);
                 console.log("➡️ OpenAI parsed artists:", parsedArtists);
-                // Write OpenAI output to "artists.json" file
-                fs.writeFileSync('artists.json', JSON.stringify(parsedArtists, null, 2));
             } catch (err) {
                 console.error("❌ Could not parse artists from OpenAI response:", err);
             }
