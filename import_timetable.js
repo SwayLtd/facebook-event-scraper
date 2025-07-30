@@ -235,27 +235,8 @@ async function insertOrUpdateArtist(artistData, soundCloudData = null) {
     }
 }
 
-// --- Generic event search ---
-async function findExistingEvent(eventUrl) {
-    try {
-        logMessage(`Searching for event in the database via Facebook URL: ${eventUrl}`);
-        const { data: eventsByMetaUrl, error: metaUrlError } = await supabase
-            .from('events')
-            .select('id, title, metadata, date_time')
-            .ilike('metadata->>facebook_url', eventUrl);
-        if (metaUrlError) throw metaUrlError;
-        if (eventsByMetaUrl && eventsByMetaUrl.length > 0) {
-            const event = eventsByMetaUrl[0];
-            logMessage(`✅ Event found: "${event.title}" (ID: ${event.id})`);
-            return event;
-        }
-        logMessage("❌ No event found with this Facebook URL in the database");
-        throw new Error("Event not found in the database. Create it first!");
-    } catch (error) {
-        logMessage(`Error searching for event: ${error.message}`);
-        throw error;
-    }
-}
+// --- Use robust event search from models/event.js ---
+import { findEvent } from "./models/event.js";
 
 import { toUtcIso } from './utils/date_utils.js';
 function extractStagesAndDaysFromPerformances(performances, timezone = 'Europe/Brussels') {
@@ -463,9 +444,12 @@ async function main() {
         const jsonData = JSON.parse(fs.readFileSync(jsonFilePath, 'utf8'));
         logMessage(`Loaded ${jsonData.length} artist performances from JSON`);
         const accessToken = await getAccessToken();
-        logMessage("Searching for the event in the database...");
-        // Patch: pass eventUrl to findExistingEvent
-        const event = await findExistingEvent(eventUrl);
+        logMessage("Searching for the event in the database (robust search)...");
+        const event = await findEvent(supabase, { facebookUrl: eventUrl });
+        if (!event) {
+            logMessage("❌ No event found with this Facebook URL or title in the database. Create it first!");
+            throw new Error("Event not found in the database. Create it first!");
+        }
         // --- Enrich event metadata ---
         const { stages, festival_days } = extractStagesAndDaysFromPerformances(jsonData, timezone);
         await updateEventMetadata(event, stages, festival_days);
