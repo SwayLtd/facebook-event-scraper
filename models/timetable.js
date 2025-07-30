@@ -296,7 +296,6 @@ async function processFestivalTimetable(supabase, eventId, timetableData, clashf
     let successCount = 0;
     let soundCloudFoundCount = 0;
     const artistNameToId = {};
-    const artistsWithoutSoundCloud = []; // Track artists without SoundCloud link
     
     // Import artist model
     const artistModule = await import('./artist.js');

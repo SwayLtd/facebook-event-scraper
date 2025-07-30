@@ -22,8 +22,8 @@
 
 import 'dotenv/config';
 import { createClient } from '@supabase/supabase-js';
-import { logMessage } from './utils/logger.js';
-import { delay } from './utils/delay.js';
+import { logMessage } from '../utils/logger.js';
+import { delay } from '../utils/delay.js';
 
 // Configuration
 const POLL_INTERVAL_MS = parseInt(process.env.POLL_INTERVAL_MS) || 30000; // 30 seconds
@@ -217,7 +217,7 @@ async function processEvent(event) {
 
     // Import the main processing logic from import_event.js
     // For now, we'll use dynamic import to reuse the logic
-    const { processEventImport } = await import('./import_event_core.js');
+    const { processEventImport } = await import('../import_event_core.js');
 
     const result = await processEventImport({
         eventUrl: facebook_url,
