@@ -94,10 +94,17 @@ let bannedGenreIds = [];
 async function main() {
     try {
         const eventUrl = process.argv[2];
+        const skipArtists = process.argv.includes('--no-artists') || process.argv.includes('--skip-artists');
+        
         if (!eventUrl) {
             console.error('❌ Please specify a Facebook Events URL. Example:');
-            console.error('   node importEvent.js https://www.facebook.com/events/1234567890');
+            console.error('   node import_event.js https://www.facebook.com/events/1234567890');
+            console.error('   node import_event.js https://www.facebook.com/events/1234567890 --no-artists');
             process.exit(1);
+        }
+
+        if (skipArtists) {
+            console.log('🚫 Artist import disabled by --no-artists flag');
         }
 
         console.log("🔎 Scraping the Facebook event...");
@@ -492,18 +499,22 @@ async function main() {
         }
 
         // (5) Import artists based on detected strategy
-        if (importStrategy === 'festival' && timetableData && timetableData.length > 0) {
-            // Use timetable module to process festival timetable
-            await timetableModel.processFestivalTimetable(supabase, eventId, timetableData, clashfinderResult, {
-                dryRun: DRY_RUN,
-                soundCloudClientId: SOUND_CLOUD_CLIENT_ID,
-                soundCloudClientSecret: SOUND_CLOUD_CLIENT_SECRET,
-                logMessage,
-                delay: (ms) => new Promise(resolve => setTimeout(resolve, ms))
-            });
+        if (!skipArtists) {
+            if (importStrategy === 'festival' && timetableData && timetableData.length > 0) {
+                // Use timetable module to process festival timetable
+                await timetableModel.processFestivalTimetable(supabase, eventId, timetableData, clashfinderResult, {
+                    dryRun: DRY_RUN,
+                    soundCloudClientId: SOUND_CLOUD_CLIENT_ID,
+                    soundCloudClientSecret: SOUND_CLOUD_CLIENT_SECRET,
+                    logMessage,
+                    delay: (ms) => new Promise(resolve => setTimeout(resolve, ms))
+                });
+            } else {
+                // Use artist module to process simple event artists
+                await artistModel.processSimpleEventArtists(supabase, openai, eventId, eventDescription, DRY_RUN);
+            }
         } else {
-            // Use artist module to process simple event artists
-            await artistModel.processSimpleEventArtists(supabase, openai, eventId, eventDescription, DRY_RUN);
+            console.log('⏭️ Skipping artist import as requested');
         }
 
         // (6) Post-processing: Assign genres
