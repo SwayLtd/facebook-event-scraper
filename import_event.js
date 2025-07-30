@@ -157,7 +157,9 @@ async function main() {
 
         const eventName = eventData.name || null;
         const eventDescription = eventData.description || null;
-        const eventType = (eventData.categories && eventData.categories.length) ? eventData.categories[0].label : null;
+        // Set type as "festival" if detected as festival, otherwise use Facebook category
+        const eventType = (importStrategy === 'festival') ? 'festival' : 
+                         ((eventData.categories && eventData.categories.length) ? eventData.categories[0].label : null);
         const startTimeISO = eventData.startTimestamp ? new Date(eventData.startTimestamp * 1000).toISOString() : null;
         const endTimeISO = eventData.endTimestamp ? new Date(eventData.endTimestamp * 1000).toISOString() : null;
         const fbEventUrl = eventData.url || eventUrl;
