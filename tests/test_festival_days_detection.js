@@ -4,7 +4,6 @@
 
 
 import fs from 'fs';
-import path from 'path';
 
 function log(msg) {
     console.log(msg);

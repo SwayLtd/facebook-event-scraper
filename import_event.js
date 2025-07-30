@@ -7,12 +7,19 @@ import NodeGeocoder from 'node-geocoder';
 import OpenAI from 'openai';
 
 import { normalizeNameEnhanced, getNormalizedName } from './utils/name.js';
+import { logMessage } from './utils/logger.js';
+import { detectFestival, extractFestivalName } from './utils/festival-detection.js';
+import { getClashfinderTimetable } from './get_data/get_clashfinder_timetable.js';
+
+// Import extraction functions
+import { convertClashfinderToJSON } from './extract_events_timetable.js';
 
 // Import models
 import artistModel from './models/artist.js';
 import genreModel from './models/genre.js';
 import promoterModel from './models/promoter.js';
 import venueModel from './models/venue.js';
+import timetableModel from './models/timetable.js';
 
 // Import utility functions
 import geoUtils from './utils/geo.js';
@@ -96,6 +103,57 @@ async function main() {
         console.log("🔎 Scraping the Facebook event...");
         const eventData = await scrapeFbEvent(eventUrl);
         console.log(`✅ Scraped data for event: "${eventData.name}" (Facebook ID: ${eventData.id})`);
+
+        // === FESTIVAL DETECTION ===
+        console.log("\n🎪 Analyzing event to detect if it's a festival...");
+        const festivalDetection = detectFestival(eventData);
+        logMessage(`Festival detection result: ${festivalDetection.isFestival ? 'FESTIVAL' : 'SIMPLE EVENT'} (confidence: ${festivalDetection.confidence}%)`);
+        logMessage(`Detection reasons: ${festivalDetection.reasons.join(', ')}`);
+        
+        if (festivalDetection.duration) {
+            console.log(`⏱️ Event duration: ${festivalDetection.duration.hours.toFixed(1)} hours (${festivalDetection.duration.days} days)`);
+        }
+
+        // Determine import strategy based on festival detection
+        let importStrategy = 'simple'; // Default to simple event import
+        let timetableData = null;
+        let clashfinderResult = null;
+        
+        // Primary criterion: Duration > 24 hours means it's a festival
+        if (festivalDetection.duration && festivalDetection.duration.hours > 24) {
+            importStrategy = 'festival';
+            console.log(`🎪 Event detected as FESTIVAL (${festivalDetection.duration.hours.toFixed(1)}h > 24h) - will attempt timetable import`);
+            
+            // Try to get timetable from Clashfinder
+            const festivalName = festivalDetection.festivalName || extractFestivalName(eventData.name);
+            if (festivalName) {
+                console.log(`🔍 Searching Clashfinder for festival: "${festivalName}"`);
+                try {
+                    // Use original event name for better year detection and variant generation
+                    clashfinderResult = await getClashfinderTimetable(eventData.name, { 
+                        saveFile: false, 
+                        silent: true,
+                        minSimilarity: 70  // Higher threshold to avoid false positives
+                    });
+                    console.log(`✅ Found Clashfinder data for: ${clashfinderResult.festival.name} (similarity: ${clashfinderResult.similarity}%)`);
+                    console.log(`🔗 Clashfinder URL: ${clashfinderResult.clashfinderUrl}`);
+                    
+                    // Convert CSV to JSON format expected by timetable import
+                    timetableData = await convertClashfinderToJSON(clashfinderResult.csv);
+                    console.log(`📊 Converted CSV to JSON: ${timetableData.length} performances`);
+                    
+                } catch (clashfinderError) {
+                    console.log(`⚠️ Clashfinder lookup failed: ${clashfinderError.message}`);
+                    console.log(`🔄 Falling back to simple event import with OpenAI parsing`);
+                    importStrategy = 'simple_fallback';
+                }
+            } else {
+                console.log(`⚠️ Could not extract festival name for Clashfinder search`);
+                importStrategy = 'simple_fallback';
+            }
+        } else {
+            console.log(`📝 Event detected as SIMPLE EVENT - will use OpenAI artist parsing`);
+        }
 
         const eventName = eventData.name || null;
         const eventDescription = eventData.description || null;
@@ -431,104 +489,25 @@ async function main() {
             }
         }
 
-        // (5) Extract artists via OpenAI using model "gpt-4o-mini"
-        console.log("\n💬 Calling OpenAI to parse artists from event description...");
-        let parsedArtists = [];
-        if (eventDescription) {
-            const systemPrompt = `
-                You are an expert at extracting structured data from Facebook Event descriptions. Your task is to analyze the provided text and extract information solely about the artists. Assume that each line of the text (separated by line breaks) represents one artist's entry, unless it clearly contains a collaboration indicator (such as "B2B", "F2F", "B3B", or "VS"), in which case treat each artist separately. 
-
-                For each artist identified, extract the following elements if they are present:
-                - name: The name of the artist. IMPORTANT: Remove any trailing suffixes such as "A/V". In a line where the text starts with a numeric identifier followed by additional text (for example, "999999999 DOMINION A/V"), output only the numeric identifier. For other names, simply remove suffixes like " A/V" so that "I HATE MODELS A/V" becomes "I HATE MODELS".
-                - time: The performance time, if mentioned.
-                - soundcloud: The SoundCloud link for the artist, if provided.
-                - stage: The stage associated with the artist (only one stage per artist).
-                - performance_mode: The performance mode associated with the artist. Look for collaboration indicators (B2B, F2F, B3B, VS). If an artist is involved in a collaborative performance, record the specific mode here; otherwise leave this value empty.
-
-                The output must be a valid JSON array where each artist is represented as an object with these keys. For example:
-                [
-                {
-                    "name": "Reinier Zonneveld",
-                    "time": "18:00",
-                    "soundcloud": "",
-                    "stage": "KARROSSERIE",
-                    "performance_mode": ""
-                }
-                ]
-
-                Additional Instructions:
-                - Use only the provided text for extraction.
-                - Treat each line as a separate artist entry unless a collaboration indicator suggests multiple names.
-                - If any piece of information (time, SoundCloud link, stage, performance_mode) is missing, use an empty string.
-                - The generated JSON must be valid and strictly follow the structure requested.
-                - The output should be in English.
-            `.trim();
-
-            const userPrompt = `
-                Text to Analyze:
-
-                \`\`\`
-                ${eventDescription}
-                \`\`\`
-            `.trim();
-
-            try {
-                const response = await openai.chat.completions.create({
-                    model: "gpt-4o-mini", // Using the gpt-4o-mini model
-                    messages: [
-                        { role: "system", content: systemPrompt },
-                        { role: "user", content: userPrompt },
-                    ],
-                    temperature: 0,
-                    max_tokens: 2000,
-                });
-                let artistsJSON = response.choices[0].message?.content || '';
-                // Remove any markdown backticks
-                artistsJSON = artistsJSON
-                    .replace(/^\s*```(json)?\s*/i, '')
-                    .replace(/\s*```(\s*)?$/, '')
-                    .trim();
-                parsedArtists = JSON.parse(artistsJSON);
-                console.log("➡️ OpenAI parsed artists:", parsedArtists);
-            } catch (err) {
-                console.error("❌ Could not parse artists from OpenAI response:", err);
-            }
-
+        // (5) Import artists based on detected strategy
+        if (importStrategy === 'festival' && timetableData && timetableData.length > 0) {
+            // Use timetable module to process festival timetable
+            await timetableModel.processFestivalTimetable(supabase, eventId, timetableData, clashfinderResult, {
+                dryRun: DRY_RUN,
+                soundCloudClientId: SOUND_CLOUD_CLIENT_ID,
+                soundCloudClientSecret: SOUND_CLOUD_CLIENT_SECRET,
+                logMessage,
+                delay: (ms) => new Promise(resolve => setTimeout(resolve, ms))
+            });
         } else {
-            console.log("⚠️ No description found, skipping artist extraction.");
+            // Use artist module to process simple event artists
+            await artistModel.processSimpleEventArtists(supabase, openai, eventId, eventDescription, DRY_RUN);
         }
 
-        // (6) Import artists and create relations
-        if (!DRY_RUN && eventId && parsedArtists.length > 0) {
-            for (const artistObj of parsedArtists) {
-                const artistName = (artistObj.name || '').trim();
-                if (!artistName) {
-                    console.log("⚠️ Skipping artist with no name:", artistObj);
-                    continue;
-                }
-                let artistId = null;
-                try {
-                    artistId = await artistModel.findOrInsertArtist(supabase, artistObj);
-                } catch (e) {
-                    console.error(`❌ Error processing artist "${artistName}":`, e);
-                }
-                try {
-                    await databaseUtils.createEventArtistRelation(supabase, eventId, artistId, artistObj);
-                } catch (e) {
-                    console.error(`❌ Error creating relation for artist "${artistName}":`, e);
-                }
-            }
-            console.log("✅ Completed full event import (with artists).");
-        } else if (!DRY_RUN && parsedArtists.length === 0) {
-            console.log("✅ Event import done. No artists found via OpenAI.");
-        } else if (DRY_RUN) {
-            console.log("(DRY_RUN) Would process artists:", parsedArtists);
-        }
-
-        // (7) Post-processing: Assign genres
+        // (6) Post-processing: Assign genres
         if (!DRY_RUN && eventId) {
             try {
-                await genreModel.assignEventGenres(supabase, eventId, bannedGenreIds);
+                await genreModel.assignEventGenres(supabase, eventId, bannedGenreIds, festivalDetection.isFestival);
                 console.log("✅ Event genres assigned.");
             } catch (err) {
                 console.error("Error assigning event genres:", err);
@@ -538,7 +517,7 @@ async function main() {
             for (const promoterId of promoterIds) {
                 if (!promoterId) continue;
                 try {
-                    await promoterModel.assignPromoterGenres(supabase, promoterId, bannedGenreIds);
+                    await promoterModel.assignPromoterGenres(supabase, promoterId, bannedGenreIds, festivalDetection.isFestival);
                     console.log(`✅ Genres assigned for promoter id=${promoterId}.`);
                 } catch (err) {
                     console.error(`Error assigning genres for promoter id=${promoterId}:`, err);

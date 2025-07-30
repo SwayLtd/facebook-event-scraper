@@ -273,10 +273,186 @@ async function insertOrUpdateArtist(supabase, artistData, soundCloudData = null,
     }
 }
 
+/**
+ * Processes simple event artists using OpenAI parsing from description
+ * @param {import('@supabase/supabase-js').SupabaseClient} supabase - The Supabase client
+ * @param {Object} openai - OpenAI client instance
+ * @param {number} eventId - The event ID in the database
+ * @param {string} eventDescription - The event description to parse
+ * @param {boolean} dryRun - Whether to perform actual database operations
+ * @returns {Promise<Array>} Array of processed artist IDs
+ */
+async function processSimpleEventArtists(supabase, openai, eventId, eventDescription, dryRun = false) {
+    console.log("\n💬 Processing simple event - calling OpenAI to parse artists from description...");
+    let parsedArtists = [];
+    
+    if (eventDescription) {
+        try {
+            const response = await openai.chat.completions.create({
+                model: "gpt-4o-mini",
+                messages: [
+                    {
+                        role: "system",
+                        content: `You are an expert at extracting structured data from Facebook Event descriptions. Your task is to analyze the provided text and extract information solely about the artists. Assume that each line of the text (separated by line breaks) represents one artist's entry, unless it clearly contains a collaboration indicator (such as "B2B", "F2F", "B3B", or "VS"), in which case treat each artist separately. 
+
+            For each artist identified, extract the following elements if they are present:
+            - name: The name of the artist. IMPORTANT: Remove any trailing suffixes such as "A/V". In a line where the text starts with a numeric identifier followed by additional text (for example, "999999999 DOMINION A/V"), output only the numeric identifier. For other names, simply remove suffixes like " A/V" so that "I HATE MODELS A/V" becomes "I HATE MODELS".
+            - time: The performance time, if mentioned.
+            - soundcloud: The SoundCloud link for the artist, if provided.
+            - stage: The stage associated with the artist (only one stage per artist).
+            - performance_mode: The performance mode associated with the artist. Look for collaboration indicators (B2B, F2F, B3B, VS). If an artist is involved in a collaborative performance, record the specific mode here; otherwise leave this value empty.
+
+            The output must be a valid JSON array where each artist is represented as an object with these keys. For example:
+            [
+            {
+                "name": "Reinier Zonneveld",
+                "time": "18:00",
+                "soundcloud": "",
+                "stage": "KARROSSERIE",
+                "performance_mode": ""
+            }
+            ]
+
+            Additional Instructions:
+            - Use only the provided text for extraction.
+            - Treat each line as a separate artist entry unless a collaboration indicator suggests multiple names.
+            - If any piece of information (time, SoundCloud link, stage, performance_mode) is missing, use an empty string.
+            - The generated JSON must be valid and strictly follow the structure requested.
+            - The output should be in English.`
+                    },
+                    {
+                        role: "user",
+                        content: `Parse artist names from this event description:\n\n${eventDescription}`
+                    }
+                ],
+                temperature: 0.1,
+                max_tokens: 4000
+            });
+
+            const content = response.choices[0].message.content.trim();
+            console.log("Raw OpenAI response:", content);
+
+            // Extract JSON from response
+            const jsonMatch = content.match(/\[[\s\S]*\]/);
+            if (jsonMatch) {
+                try {
+                    parsedArtists = JSON.parse(jsonMatch[0]);
+                    console.log(`✅ OpenAI parsed ${parsedArtists.length} artists with enhanced data:`);
+                    parsedArtists.forEach((artist, i) => {
+                        const extraInfo = [];
+                        if (artist.time) extraInfo.push(`time: ${artist.time}`);
+                        if (artist.stage) extraInfo.push(`stage: ${artist.stage}`);
+                        if (artist.performance_mode) extraInfo.push(`mode: ${artist.performance_mode}`);
+                        if (artist.soundcloud) extraInfo.push(`soundcloud: yes`);
+                        
+                        const infoStr = extraInfo.length > 0 ? ` (${extraInfo.join(', ')})` : '';
+                        console.log(`  ${i + 1}. ${artist.name}${infoStr}`);
+                    });
+                } catch (jsonError) {
+                    console.log("❌ JSON parsing failed, attempting to fix truncated response...");
+                    // Try to fix truncated JSON by adding closing brackets
+                    let fixedJson = jsonMatch[0];
+                    
+                    // If it ends with an incomplete object name, remove it
+                    if (fixedJson.includes('"name":') && !fixedJson.endsWith('}]')) {
+                        // Find last complete object
+                        const lastCompleteIndex = fixedJson.lastIndexOf('}');
+                        if (lastCompleteIndex > 0) {
+                            fixedJson = fixedJson.substring(0, lastCompleteIndex + 1) + ']';
+                        }
+                    }
+                    
+                    if (!fixedJson.endsWith(']')) {
+                        // Count unclosed objects
+                        const openBraces = (fixedJson.match(/\{/g) || []).length;
+                        const closeBraces = (fixedJson.match(/\}/g) || []).length;
+                        const missingClosing = openBraces - closeBraces;
+                        
+                        // Add missing closing braces and array bracket
+                        fixedJson += '}'.repeat(missingClosing) + ']';
+                    }
+                    
+                    try {
+                        parsedArtists = JSON.parse(fixedJson);
+                        console.log(`✅ Fixed and parsed ${parsedArtists.length} artists with enhanced data:`);
+                        parsedArtists.forEach((artist, i) => {
+                            const extraInfo = [];
+                            if (artist.time) extraInfo.push(`time: ${artist.time}`);
+                            if (artist.stage) extraInfo.push(`stage: ${artist.stage}`);
+                            if (artist.performance_mode) extraInfo.push(`mode: ${artist.performance_mode}`);
+                            if (artist.soundcloud) extraInfo.push(`soundcloud: yes`);
+                            
+                            const infoStr = extraInfo.length > 0 ? ` (${extraInfo.join(', ')})` : '';
+                            console.log(`  ${i + 1}. ${artist.name}${infoStr}`);
+                        });
+                    } catch (finalError) {
+                        console.log("❌ Could not fix JSON, using empty array");
+                        parsedArtists = [];
+                    }
+                }
+            } else {
+                console.log("❌ No valid JSON array found in OpenAI response");
+                parsedArtists = [];
+            }
+        } catch (error) {
+            console.error("❌ Error calling OpenAI:", error);
+            parsedArtists = [];
+        }
+    } else {
+        console.log("⚠️ No event description provided for parsing");
+        parsedArtists = [];
+    }
+
+    // Import artists and create relations
+    const processedArtistIds = [];
+    if (!dryRun && eventId && parsedArtists.length > 0) {
+        for (const artistObj of parsedArtists) {
+            if (artistObj.name && artistObj.name.trim()) {
+                try {
+                    // Use the enhanced artist object with additional fields
+                    const enhancedArtistObj = {
+                        name: artistObj.name.trim(),
+                        soundcloud: artistObj.soundcloud || null,
+                        // Store additional metadata for potential future use
+                        metadata: {
+                            time: artistObj.time || null,
+                            stage: artistObj.stage || null,
+                            performance_mode: artistObj.performance_mode || null
+                        }
+                    };
+                    
+                    const artistId = await findOrInsertArtist(supabase, enhancedArtistObj);
+                    if (artistId) {
+                        processedArtistIds.push(artistId);
+                        
+                        // Link artist to event with performance details if available
+                        const { linkArtistsToEvent } = await import('./event.js');
+                        await linkArtistsToEvent(supabase, eventId, [artistId], {
+                            stage: artistObj.stage || null,
+                            time: artistObj.time || null,
+                            end_time: null
+                        }, dryRun);
+                    }
+                } catch (error) {
+                    console.error(`❌ Error processing artist "${artistObj.name}": ${error.message}`);
+                }
+            }
+        }
+        console.log(`✅ Simple event import complete: ${processedArtistIds.length} artists processed`);
+    } else if (dryRun) {
+        console.log(`[DRY_RUN] Would have processed ${parsedArtists.length} artists for event ${eventId}`);
+    } else {
+        console.log("⚠️ No artists to process or missing event ID");
+    }
+    
+    return processedArtistIds;
+}
+
 export default {
     getBestImageUrl,
     findOrInsertArtist,
     insertOrUpdateArtist,
     searchArtist,
     extractArtistInfo,
+    processSimpleEventArtists,
 };

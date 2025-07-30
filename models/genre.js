@@ -3,7 +3,7 @@
 
 import fetch from 'node-fetch';
 import databaseUtils from '../utils/database.js';
-import { MIN_GENRE_OCCURRENCE } from '../utils/constants.js';
+import { MIN_GENRE_OCCURRENCE, MAX_GENRES_REGULAR, MAX_GENRES_FESTIVAL, FESTIVAL_FALLBACK_GENRES } from '../utils/constants.js';
 import { getAccessToken } from '../utils/token.js';
 
 /**
@@ -323,9 +323,10 @@ async function processArtistGenres(supabase, artistData, lastfmApiKey, bannedGen
  * @param {import('@supabase/supabase-js').SupabaseClient} supabase - The Supabase client.
  * @param {number} eventId - The ID of the event.
  * @param {number[]} bannedGenreIds - Array of banned genre IDs.
+ * @param {boolean} isFestival - Whether the event is a festival (allows more genres)
  * @returns {Promise<number[]>}
  */
-async function assignEventGenres(supabase, eventId, bannedGenreIds) {
+async function assignEventGenres(supabase, eventId, bannedGenreIds, isFestival = false) {
     const { data: eventArtists, error: eaError } = await supabase
         .from('event_artist')
         .select('artist_id')
@@ -346,21 +347,25 @@ async function assignEventGenres(supabase, eventId, bannedGenreIds) {
         }
     }
 
+    // Determine max genres based on festival status
+    const maxGenres = isFestival ? MAX_GENRES_FESTIVAL : MAX_GENRES_REGULAR;
+    const fallbackGenres = isFestival ? FESTIVAL_FALLBACK_GENRES : 3;
+
     let topGenreIds = Object.entries(genreCounts)
         .filter(([genreId, count]) =>
             count >= MIN_GENRE_OCCURRENCE &&
             !bannedGenreIds.includes(Number(genreId))
         )
         .sort(([, a], [, b]) => b - a)
-        .slice(0, 5)
+        .slice(0, maxGenres)
         .map(([genreId]) => Number(genreId));
 
-    // Fallback: always attempt to assign top 3 non-banned genres, even if genreCounts is empty
+    // Fallback: always attempt to assign top genres, even if genreCounts is empty
     if (topGenreIds.length === 0) {
         topGenreIds = Object.entries(genreCounts)
             .filter(([genreId]) => !bannedGenreIds.includes(Number(genreId)))
             .sort(([, a], [, b]) => b - a)
-            .slice(0, 3)
+            .slice(0, fallbackGenres)
             .map(([genreId]) => Number(genreId));
 
         if (topGenreIds.length === 0) {
@@ -369,13 +374,13 @@ async function assignEventGenres(supabase, eventId, bannedGenreIds) {
             );
         } else {
             console.log(
-                `[Genres] No genre ≥ ${MIN_GENRE_OCCURRENCE} non-banned occurrences for event ${eventId}, fallback to top 3 non-banned genres:`,
+                `[Genres] No genre ≥ ${MIN_GENRE_OCCURRENCE} non-banned occurrences for event ${eventId}, fallback to top ${fallbackGenres} non-banned genres${isFestival ? ' (festival)' : ''}:`,
                 topGenreIds
             );
         }
     } else {
         console.log(
-            `[Genres] Top genres for event ${eventId} (threshold ${MIN_GENRE_OCCURRENCE}):`,
+            `[Genres] Top genres for event ${eventId} (threshold ${MIN_GENRE_OCCURRENCE}${isFestival ? ', festival - max ' + maxGenres : ''}):`,
             topGenreIds
         );
     }

@@ -7,6 +7,13 @@
   "types": "dist/index.d.ts",
   "scripts": {
     "start": "ts-node src/index.ts",
+    "server": "node server.js",
+    "server:dev": "DRY_RUN=true node server.js",
+    "add-event": "node add_event.js",
+    "import-event": "node import_event.js",
+    "import-timetable": "node import_timetable.js",
+    "clashfinder": "node get_data/get_clashfinder_timetable.js",
+    "test-festival": "node tests/test_festival_days_detection.js",
     "prepare": "husky install",
     "test": "jest",
     "test:unit": "npm test -- --testPathIgnorePatterns src/tests/e2e.test.ts",

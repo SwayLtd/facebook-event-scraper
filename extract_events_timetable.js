@@ -257,8 +257,89 @@ function extractEventsFromCsv(csvFilePath, outputPath = null) {
 }
 
 // Check if this script is being run directly
-if (import.meta.url === `file://${process.argv[1]}` || process.argv[1].endsWith('extract_events_timetable.js')) {
+if (import.meta.url === `file://${process.argv[1]}` || (process.argv[1] && process.argv[1].endsWith('extract_events_timetable.js'))) {
     main();
+}
+
+/**
+ * Converts Clashfinder CSV data to JSON format expected by timetable import
+ * @param {string} csvData - Raw CSV data from Clashfinder
+ * @returns {Array} Array of performance objects
+ */
+function convertClashfinderToJSON(csvData) {
+    const lines = csvData.split('\n').filter(line => line.trim());
+    if (lines.length <= 1) return []; // No data
+    
+    // Find the header line (starts with // and contains column names)
+    let headerIndex = -1;
+    let dataStartIndex = -1;
+    
+    for (let i = 0; i < lines.length; i++) {
+        const line = lines[i].trim();
+        if (line.startsWith('// Start,End,Name,Location')) {
+            headerIndex = i;
+            dataStartIndex = i + 1;
+            break;
+        }
+    }
+    
+    if (headerIndex === -1) {
+        console.warn('No valid header found in Clashfinder CSV');
+        return [];
+    }
+    
+    // Extract headers from the header line (remove // prefix)
+    const headerLine = lines[headerIndex].replace(/^\/\/\s*/, '');
+    const headers = headerLine.split(',').map(h => h.trim().replace(/"/g, ''));
+    const performances = [];
+    
+    // Process data lines (skip comment lines)
+    for (let i = dataStartIndex; i < lines.length; i++) {
+        const line = lines[i].trim();
+        
+        // Skip empty lines and comment lines
+        if (!line || line.startsWith('//')) continue;
+        
+        const values = line.split(',').map(v => v.trim().replace(/"/g, ''));
+        const performance = {};
+        
+        // Map CSV columns to expected JSON structure
+        headers.forEach((header, index) => {
+            const value = values[index] || '';
+            switch (header.toLowerCase()) {
+                case 'start':
+                    performance.time = parseDatetime(value);
+                    break;
+                case 'end':
+                    performance.end_time = parseDatetime(value);
+                    break;
+                case 'name':
+                    performance.name = cleanName(value);
+                    performance.performance_mode = detectMode(value);
+                    break;
+                case 'location':
+                case 'stage':
+                    performance.stage = value;
+                    break;
+                case 'soundcloud':
+                    performance.soundcloud = value;
+                    break;
+                default:
+                    // Store other headers as-is
+                    performance[header.toLowerCase()] = value;
+                    break;
+            }
+        });
+        
+        // Only add performances with required fields
+        if (performance.name && performance.stage) {
+            performance.artist_id = [];
+            if (!performance.soundcloud) performance.soundcloud = '';
+            performances.push(performance);
+        }
+    }
+    
+    return performances;
 }
 
 // Export functions for use as a module
@@ -270,5 +351,6 @@ export {
     cleanName,
     detectMode,
     detectPresents,
-    extractEventsFromCsv
+    extractEventsFromCsv,
+    convertClashfinderToJSON
 };

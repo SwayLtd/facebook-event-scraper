@@ -3,7 +3,7 @@ import 'dotenv/config';  // Load environment variables from a .env file if prese
 import stringSimilarity from 'string-similarity';
 import { getNormalizedName } from '../utils/name.js';
 import databaseUtils from '../utils/database.js';
-import { FUZZY_THRESHOLD, MIN_GENRE_OCCURRENCE } from '../utils/constants.js';
+import { FUZZY_THRESHOLD, MIN_GENRE_OCCURRENCE, MAX_GENRES_REGULAR, MAX_GENRES_FESTIVAL, FESTIVAL_FALLBACK_GENRES } from '../utils/constants.js';
 
 const longLivedToken = process.env.LONG_LIVED_TOKEN;  // Facebook Graph API token
 
@@ -152,9 +152,10 @@ async function findOrInsertPromoter(supabase, promoterName, eventData) {
  * @param {import('@supabase/supabase-js').SupabaseClient} supabase - The Supabase client.
  * @param {number} promoterId - The ID of the promoter.
  * @param {number[]} bannedGenreIds - Array of banned genre IDs.
+ * @param {boolean} isFestival - Whether the main event is a festival (allows more genres)
  * @returns {Promise<number[]>}
  */
-async function assignPromoterGenres(supabase, promoterId, bannedGenreIds) {
+async function assignPromoterGenres(supabase, promoterId, bannedGenreIds, isFestival = false) {
     // 1) Get the promoter's events
     const { data: promoterEvents, error: peError } = await supabase
         .from('event_promoter')
@@ -176,13 +177,17 @@ async function assignPromoterGenres(supabase, promoterId, bannedGenreIds) {
     }
 
     // 3) First filter: threshold + exclusion of banned genres
+    // Determine max genres based on festival status
+    const maxGenres = isFestival ? MAX_GENRES_FESTIVAL : MAX_GENRES_REGULAR;
+    const fallbackGenres = isFestival ? FESTIVAL_FALLBACK_GENRES : 3;
+
     let topGenreIds = Object.entries(genreCounts)
         .filter(([genreId, count]) =>
             count >= MIN_GENRE_OCCURRENCE &&
             !bannedGenreIds.includes(Number(genreId))
         )
         .sort(([, a], [, b]) => b - a)
-        .slice(0, 5)
+        .slice(0, maxGenres)
         .map(([genreId]) => Number(genreId));
 
     // 4) More permissive fallback
@@ -190,17 +195,17 @@ async function assignPromoterGenres(supabase, promoterId, bannedGenreIds) {
         topGenreIds = Object.entries(genreCounts)
             .filter(([genreId]) => !bannedGenreIds.includes(Number(genreId)))
             .sort(([, a], [, b]) => b - a)
-            .slice(0, 3)
+            .slice(0, fallbackGenres)
             .map(([genreId]) => Number(genreId));
 
         console.log(
             `[Genres] No genre ≥ ${MIN_GENRE_OCCURRENCE} non-banned occurrences for promoter ${promoterId}, ` +
-            `fallback top 3 without threshold:`,
+            `fallback top ${fallbackGenres} without threshold${isFestival ? ' (festival)' : ''}:`,
             topGenreIds
         );
     } else {
         console.log(
-            `[Genres] Top genres for promoter ${promoterId} (threshold ${MIN_GENRE_OCCURRENCE}):`,
+            `[Genres] Top genres for promoter ${promoterId} (threshold ${MIN_GENRE_OCCURRENCE}${isFestival ? ', festival - max ' + maxGenres : ''}):`,
             topGenreIds
         );
     }

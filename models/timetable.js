@@ -240,10 +240,136 @@ export function processTimetableData(jsonData, timezone = 'Europe/Brussels') {
     };
 }
 
+/**
+ * Processes festival timetable data and imports artists with timing information
+ * @param {import('@supabase/supabase-js').SupabaseClient} supabase - The Supabase client
+ * @param {number} eventId - The event ID in the database
+ * @param {Array} timetableData - Array of performance objects from Clashfinder
+ * @param {Object} clashfinderResult - Original Clashfinder result with metadata
+ * @param {Object} options - Processing options
+ * @param {boolean} options.dryRun - Whether to perform actual database operations
+ * @param {string} options.soundCloudClientId - SoundCloud client ID
+ * @param {string} options.soundCloudClientSecret - SoundCloud client secret
+ * @param {Function} options.logMessage - Logging function
+ * @param {Function} options.delay - Delay function for rate limiting
+ * @returns {Promise<Object>} Processing results with statistics
+ */
+async function processFestivalTimetable(supabase, eventId, timetableData, clashfinderResult, options = {}) {
+    const {
+        dryRun = false,
+        soundCloudClientId,
+        soundCloudClientSecret,
+        logMessage = console.log,
+        delay = (ms) => new Promise(resolve => setTimeout(resolve, ms))
+    } = options;
+
+    if (dryRun) {
+        console.log(`(DRY_RUN) Would process festival timetable with ${timetableData.length} performances`);
+        return { processedCount: 0, successCount: 0, soundCloudFoundCount: 0 };
+    }
+
+    console.log(`\n🎪 Processing festival timetable with ${timetableData.length} performances...`);
+    logMessage(`Starting festival timetable import for event ${eventId}`);
+    
+    // Set default timezone
+    const timezone = 'Europe/Brussels';
+    
+    // Generate statistics and extract metadata
+    const stats = generateTimetableStatistics(timetableData);
+    const { stages, festival_days } = extractStagesAndDaysFromPerformances(timetableData, timezone);
+    
+    // Update event metadata with festival information
+    const { updateEventMetadata } = await import('./event.js');
+    await updateEventMetadata(supabase, { id: eventId }, stages, festival_days, dryRun);
+    
+    // Log statistics
+    logTimetableStatistics(stats, logMessage);
+    
+    // Group performances for B2B detection
+    const groupedPerformances = groupPerformancesForB2B(timetableData);
+    
+    // Get SoundCloud access token
+    const { getAccessToken } = await import('../utils/token.js');
+    const accessToken = await getAccessToken(soundCloudClientId, soundCloudClientSecret);
+    
+    let processedCount = 0;
+    let successCount = 0;
+    let soundCloudFoundCount = 0;
+    const artistNameToId = {};
+    const artistsWithoutSoundCloud = []; // Track artists without SoundCloud link
+    
+    // Import artist model
+    const artistModule = await import('./artist.js');
+    const insertOrUpdateArtist = artistModule.default.insertOrUpdateArtist;
+    const eventModule = await import('./event.js');
+    const linkArtistsToEvent = eventModule.default.linkArtistsToEvent;
+    
+    for (const group of groupedPerformances) {
+        const artistIds = [];
+        const artistNames = [];
+        
+        for (const perf of group) {
+            let soundCloudData = null;
+            
+            // Search SoundCloud if we have an access token
+            if (accessToken && perf.name) {
+                try {
+                    const artistModule = await import('./artist.js');
+                    const searchArtist = artistModule.default.searchArtist;
+                    const extractArtistInfo = artistModule.default.extractArtistInfo;
+                    const scArtist = await searchArtist(perf.name, accessToken);
+                    if (scArtist) {
+                        soundCloudData = await extractArtistInfo(scArtist);
+                        soundCloudFoundCount++;
+                    }
+                } catch (error) {
+                    console.error(`Error searching SoundCloud for ${perf.name}:`, error);
+                }
+            }
+            
+            // Insert or update artist
+            const artistData = { name: perf.name };
+            const result = await insertOrUpdateArtist(supabase, artistData, soundCloudData, dryRun);
+            
+            if (result.id) {
+                artistIds.push(result.id);
+                artistNames.push(perf.name);
+                artistNameToId[perf.name] = result.id;
+            }
+        }
+        
+        // Link artists to event with performance details
+        if (artistIds.length > 0) {
+            const refPerf = group[0];
+            await linkArtistsToEvent(supabase, eventId, artistIds, refPerf, dryRun);
+            
+            successCount += group.length;
+            processedCount += group.length;
+            logMessage(`Successfully processed: ${artistNames.join(' & ')} (${group.length} performance(s))`);
+        }
+        
+        await delay(500); // Rate limiting
+    }
+    
+    logMessage(`Festival timetable import complete: ${processedCount} artists processed, ${successCount} imported, ${soundCloudFoundCount} with SoundCloud`);
+    console.log(`✅ Festival import complete: ${processedCount} artists, ${soundCloudFoundCount} found on SoundCloud`);
+    
+    return {
+        processedCount,
+        successCount,
+        soundCloudFoundCount,
+        artistNameToId,
+        stats,
+        stages,
+        festival_days
+    };
+}
+
 export default {
     groupPerformancesForB2B,
     extractStagesAndDaysFromPerformances,
     generateTimetableStatistics,
     logTimetableStatistics,
-    processTimetableData
+    processTimetableData,
+    processFestivalTimetable
 };
