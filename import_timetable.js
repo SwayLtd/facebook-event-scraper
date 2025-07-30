@@ -1,7 +1,3 @@
-import { DateTime } from 'luxon';
-import { normalizeNameEnhanced } from './utils/name.js';
-import { getBestImageUrl } from './utils/artist.js';
-import { delay } from './utils/delay.js';
 /**
  * import_timetable.js
  *
@@ -21,144 +17,27 @@ import { delay } from './utils/delay.js';
 
 import 'dotenv/config';
 import fs from 'fs';
-import path from 'path';
-import axios from 'axios';
+import process from 'node:process';
+import { DateTime } from 'luxon';
 import { createClient } from '@supabase/supabase-js';
-import stringSimilarity from 'string-similarity';
 
-// Define __filename and __dirname for ESM
-import { fileURLToPath } from 'url';
-import { dirname } from 'path';
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = dirname(__filename);
+// Import utility functions
+import { normalizeNameEnhanced } from './utils/name.js';
+import { delay } from './utils/delay.js';
+import { getAccessToken } from './utils/token.js';
+import { logMessage } from './utils/logger.js';
+import { searchArtist, extractArtistInfo } from './models/artist.js';
+import { findEvent } from './models/event.js';
+import { toUtcIso } from './utils/date.js';
 
 // --- Configuration ---
 const DRY_RUN = process.env.DRY_RUN === 'true';
 const SOUND_CLOUD_CLIENT_ID = process.env.SOUND_CLOUD_CLIENT_ID;
 const SOUND_CLOUD_CLIENT_SECRET = process.env.SOUND_CLOUD_CLIENT_SECRET;
-const TOKEN_URL = 'https://api.soundcloud.com/oauth2/token';
-import tokenUtils from './utils/token.js';
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
 const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
-
-// --- Logging Setup ---
-const logsDir = path.join(__dirname, 'logs');
-if (!fs.existsSync(logsDir)) {
-    fs.mkdirSync(logsDir);
-}
-
-function getTimestampedLogFilePath() {
-    const now = new Date();
-    const pad = (n) => n.toString().padStart(2, '0');
-    const timestamp = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}_${pad(now.getHours())}-${pad(now.getMinutes())}-${pad(now.getSeconds())}`;
-    return path.join(logsDir, `import_timetable_${timestamp}.log`);
-}
-const logFilePath = getTimestampedLogFilePath();
-
-function logMessage(msg) {
-    const timestamp = new Date().toISOString();
-    const fullMsg = `[${timestamp}] ${msg}`;
-    console.log(fullMsg);
-    fs.appendFileSync(logFilePath, fullMsg + "\n");
-}
-
-
-/**
- * Obtains an access token from SoundCloud using client credentials.
- */
-async function getAccessToken() {
-    let token = await tokenUtils.getStoredToken();
-    if (token) return token;
-
-    try {
-        logMessage("Requesting new SoundCloud access token...");
-        const response = await axios.post(TOKEN_URL, {
-            grant_type: 'client_credentials',
-            client_id: SOUND_CLOUD_CLIENT_ID,
-            client_secret: SOUND_CLOUD_CLIENT_SECRET
-        }, {
-            headers: { 'Content-Type': 'application/json' }
-        });
-
-        token = response.data.access_token;
-        const expiresIn = response.data.expires_in;
-        await tokenUtils.storeToken(token, expiresIn);
-        logMessage("New SoundCloud access token obtained successfully.");
-        return token;
-    } catch (error) {
-        logMessage("Error obtaining SoundCloud access token: " + error.message);
-        throw error;
-    }
-}
-
-/**
- * Searches for an artist on SoundCloud
- */
-async function searchSoundCloudArtist(artistName, accessToken) {
-    try {
-        logMessage(`🎵 SoundCloud search for: "${artistName}"`);
-        const normName = normalizeNameEnhanced(artistName);
-        logMessage(`   └─ Normalized name for search: "${normName}"`);
-
-        const response = await axios.get('https://api.soundcloud.com/users', {
-            params: {
-                q: normName,
-                limit: 10
-            },
-            headers: {
-                'Authorization': `Bearer ${accessToken}`
-            }
-        });
-
-        if (response.data && response.data.length > 0) {
-            logMessage(`   └─ ${response.data.length} result(s) found on SoundCloud`);
-            // --- New composite scoring ---
-            let bestMatch = null;
-            let bestScore = 0;
-            const maxFollowers = Math.max(...response.data.map(u => u.followers_count || 0), 1);
-            response.data.forEach((user, idx) => {
-                const userNorm = normalizeNameEnhanced(user.username);
-                const nameScore = stringSimilarity.compareTwoStrings(normName.toLowerCase(), userNorm.toLowerCase());
-                // Followers: log to flatten extremes, normalized [0,1]
-                const followers = user.followers_count || 0;
-                const followersScore = Math.log10(followers + 1) / Math.log10(maxFollowers + 1);
-                // Bonus for the first result
-                const positionScore = 1 - (idx / response.data.length); // 1 for the 1st, 0.9 for the 2nd, etc.
-                // Weighting: name 60%, followers 30%, position 10%
-                const score = (nameScore * 0.6) + (followersScore * 0.3) + (positionScore * 0.1);
-                logMessage(`   └─ Candidate: "${user.username}" | name: ${nameScore.toFixed(2)} | followers: ${followers} | followersScore: ${followersScore.toFixed(2)} | pos: ${idx + 1} | score: ${score.toFixed(3)}`);
-                if (score > bestScore) {
-                    bestScore = score;
-                    bestMatch = user;
-                }
-            });
-            if (bestMatch && bestScore > 0.6) {
-                logMessage(`✅ Best SoundCloud match for "${artistName}": ${bestMatch.username} (score: ${bestScore.toFixed(3)})`);
-                logMessage(`   └─ SoundCloud Profile: ${bestMatch.permalink_url}`);
-                const bestImageUrl = await getBestImageUrl(bestMatch.avatar_url);
-                return {
-                    soundcloud_id: bestMatch.id,
-                    soundcloud_permalink: bestMatch.permalink_url,
-                    image_url: bestImageUrl,
-                    username: bestMatch.username,
-                    description: bestMatch.description,
-                };
-            } else {
-                logMessage(`⚠️ No sufficient match found for "${artistName}" (best score: ${bestScore.toFixed(3)})`);
-            }
-        } else {
-            logMessage(`   └─ No results on SoundCloud for "${normName}"`);
-        }
-        logMessage(`❌ No suitable SoundCloud match for "${artistName}"`);
-        return null;
-    } catch (error) {
-        logMessage(`❌ Error during SoundCloud search for "${artistName}": ${error.message}`);
-        return null;
-    }
-}
 
 /**
  * Inserts or updates an artist in the database
@@ -236,9 +115,6 @@ async function insertOrUpdateArtist(artistData, soundCloudData = null) {
 }
 
 // --- Use robust event search from models/event.js ---
-import { findEvent } from "./models/event.js";
-
-import { toUtcIso } from './utils/date_utils.js';
 function extractStagesAndDaysFromPerformances(performances, timezone = 'Europe/Brussels') {
     // Extract unique stages
     const stagesSet = new Set();
@@ -408,8 +284,6 @@ async function linkArtistToEvent(eventId, artistIds, performanceData) {
 }
 
 // --- CLI argument handling ---
-import process from 'node:process';
-
 function parseArgs() {
     const args = process.argv.slice(2);
     const result = {};
@@ -443,7 +317,7 @@ async function main() {
         logMessage(`[INFO] Timezone used for import: ${timezone}`);
         const jsonData = JSON.parse(fs.readFileSync(jsonFilePath, 'utf8'));
         logMessage(`Loaded ${jsonData.length} artist performances from JSON`);
-        const accessToken = await getAccessToken();
+        const accessToken = await getAccessToken(SOUND_CLOUD_CLIENT_ID, SOUND_CLOUD_CLIENT_SECRET);
         logMessage("Searching for the event in the database (robust search)...");
         const event = await findEvent(supabase, { facebookUrl: eventUrl });
         if (!event) {
@@ -495,8 +369,27 @@ async function main() {
                 const artistName = perf.name.trim();
                 artistNames.push(artistName);
                 if (!artistNameToId[artistName]) {
-                    const soundCloudData = await searchSoundCloudArtist(artistName, accessToken);
-                    if (soundCloudData) soundCloudFoundCount++;
+                    logMessage(`🎵 SoundCloud search for: "${artistName}"`);
+                    const scArtist = await searchArtist(artistName, accessToken);
+                    let soundCloudData = null;
+                    
+                    if (scArtist) {
+                        const artistInfo = await extractArtistInfo(scArtist);
+                        logMessage(`✅ Best SoundCloud match for "${artistName}": ${artistInfo.name}`);
+                        logMessage(`   └─ SoundCloud Profile: ${artistInfo.external_links.soundcloud.link}`);
+                        
+                        soundCloudData = {
+                            soundcloud_id: artistInfo.external_links.soundcloud.id,
+                            soundcloud_permalink: artistInfo.external_links.soundcloud.link,
+                            image_url: artistInfo.image_url,
+                            username: artistInfo.name,
+                            description: artistInfo.description,
+                        };
+                        soundCloudFoundCount++;
+                    } else {
+                        logMessage(`❌ No suitable SoundCloud match for "${artistName}"`);
+                    }
+                    
                     const artist = await insertOrUpdateArtist({ name: artistName }, soundCloudData);
                     artistNameToId[artistName] = artist.id;
                 }
@@ -591,11 +484,5 @@ async function main() {
 
 // --- Auto-call if executed from CLI ---
 if (process.argv[1] && process.argv[1].replace(/\\/g, '/').endsWith('import_timetable.js')) {
-    main();
-}
-// ...end patch...
-
-// --- Auto-call main() if executed directly ---
-if (process.argv[1] && process.argv[1].endsWith('import_timetable.js')) {
     main();
 }
