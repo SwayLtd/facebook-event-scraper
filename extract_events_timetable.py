@@ -98,8 +98,9 @@ def group_events(events):
         grouped[key].append(ev["name"])
 
     # Define all separators for B2B, x, vs, etc. (must have spaces around)
-    # Regex: split on any case-insensitive ' B2B ', ' B3B ', ' F2F ', ' VS ', ' x ', ' vs ', ' & ' (with spaces)
-    split_regex = re.compile(r"\s+(?:B2B|B3B|F2F|VS|x|vs|&)\s+", re.IGNORECASE)
+    # Regex: split on any case-insensitive ' B2B ', ' B3B ', ' F2F ', ' VS ', ' x ', ' vs ' (with spaces)
+    # Note: "&" is excluded to keep band names like "Bigflo & Oli" intact
+    split_regex = re.compile(r"\s+(?:B2B|B3B|F2F|VS|x|vs)\s+", re.IGNORECASE)
 
     merged = []
     for (start, end, stage), names in grouped.items():
