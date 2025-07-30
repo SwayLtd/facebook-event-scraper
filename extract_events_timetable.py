@@ -5,8 +5,10 @@ import argparse
 import sys
 from collections import defaultdict
 
-# Regex to detect performance modes inside names
-MODE_PATTERN = re.compile(r"\b(B2B|B3B|F2F|VS)\b")
+# Regex to detect performance modes inside names (excluding "presents"/"pres" which are handled specially)
+MODE_PATTERN = re.compile(r"\b(B2B|B3B|F2F|VS|meet|feat|ft)\b", re.IGNORECASE)
+# Regex to detect "presents" or "pres" patterns
+PRESENTS_PATTERN = re.compile(r"\s+(presents|pres)\s+", re.IGNORECASE)
 # Regex to strip trailing suffixes A/V or (live)
 SUFFIX_PATTERN = re.compile(r"\s+(A/V|\(live\))$", re.IGNORECASE)
 
@@ -42,6 +44,21 @@ def detect_mode(name):
     """
     match = MODE_PATTERN.search(name)
     return match.group(1) if match else ""
+
+
+def detect_presents(name):
+    """
+    Detect "presents" or "pres" patterns and return the artist name and mode.
+    Returns (artist_name, "presents", full_name) if found, else (None, None, None).
+    """
+    match = PRESENTS_PATTERN.search(name)
+    if match:
+        # Split on the presents pattern and take the first part as artist name
+        parts = PRESENTS_PATTERN.split(name, 1)
+        if len(parts) >= 3:  # [artist, separator, rest]
+            artist_name = clean_name(parts[0])
+            return artist_name, "presents", clean_name(name)
+    return None, None, None
 
 
 def load_csv(filepath):
@@ -98,49 +115,66 @@ def group_events(events):
         grouped[key].append(ev["name"])
 
     # Define all separators for B2B, x, vs, etc. (must have spaces around)
-    # Regex: split on any case-insensitive ' B2B ', ' B3B ', ' F2F ', ' VS ', ' x ', ' vs ' (with spaces)
+    # Regex: split on any case-insensitive ' B2B ', ' B3B ', ' F2F ', ' VS ', ' x ', ' vs ', ' meet ', ' w/ ', ' feat ', ' ft ' (with spaces)
     # Note: "&" is excluded to keep band names like "Bigflo & Oli" intact
-    split_regex = re.compile(r"\s+(?:B2B|B3B|F2F|VS|x|vs)\s+", re.IGNORECASE)
+    # Note: "presents"/"pres" is handled separately as a special performance mode
+    split_regex = re.compile(r"\s+(?:B2B|B3B|F2F|VS|x|vs|meet|w/|feat|ft)\s+", re.IGNORECASE)
 
     merged = []
     for (start, end, stage), names in grouped.items():
         # For each name in the slot, systematically split on separators
         for combined_name in names:
-            # Exception: do not split if the name is exactly 'B2B2B2B2B'
-            if combined_name.strip().lower() == "b2b2b2b2b":
-                split_artists = [clean_name(combined_name)]
-            else:
-                # Use the same split_regex as above (all separators require spaces)
-                split_artists = [
-                    clean_name(n)
-                    for n in split_regex.split(combined_name)
-                    if clean_name(n)
-                ]
-            # DEBUG: print the split result for each name
-            print(f"DEBUG SPLIT: '{combined_name}' -> {split_artists}")
-            if len(split_artists) > 1:
-                for n in split_artists:
-                    merged.append(
-                        {
-                            "name": n,
-                            "time": parse_datetime(start),
-                            "end_time": parse_datetime(end),
-                            "stage": stage,
-                            "performance_mode": "B2B",
-                            "custom_name": clean_name(combined_name),
-                        }
-                    )
-            else:
-                mode = detect_mode(combined_name)
+            # First check for "presents" pattern
+            artist_name, presents_mode, full_name = detect_presents(combined_name)
+            if presents_mode:
+                # Handle "presents" case - keep artist name, set mode to "presents"
                 merged.append(
                     {
-                        "name": clean_name(combined_name),
+                        "name": artist_name,
                         "time": parse_datetime(start),
                         "end_time": parse_datetime(end),
                         "stage": stage,
-                        "performance_mode": mode,
+                        "performance_mode": presents_mode,
+                        "custom_name": full_name,
                     }
                 )
+                print(f"DEBUG SPLIT: '{combined_name}' -> ['{artist_name}'] (presents mode)")
+            else:
+                # Exception: do not split if the name is exactly 'B2B2B2B2B'
+                if combined_name.strip().lower() == "b2b2b2b2b":
+                    split_artists = [clean_name(combined_name)]
+                else:
+                    # Use the same split_regex as above (all separators require spaces)
+                    split_artists = [
+                        clean_name(n)
+                        for n in split_regex.split(combined_name)
+                        if clean_name(n)
+                    ]
+                # DEBUG: print the split result for each name
+                print(f"DEBUG SPLIT: '{combined_name}' -> {split_artists}")
+                if len(split_artists) > 1:
+                    for n in split_artists:
+                        merged.append(
+                            {
+                                "name": n,
+                                "time": parse_datetime(start),
+                                "end_time": parse_datetime(end),
+                                "stage": stage,
+                                "performance_mode": "B2B",
+                                "custom_name": clean_name(combined_name),
+                            }
+                        )
+                else:
+                    mode = detect_mode(combined_name)
+                    merged.append(
+                        {
+                            "name": clean_name(combined_name),
+                            "time": parse_datetime(start),
+                            "end_time": parse_datetime(end),
+                            "stage": stage,
+                            "performance_mode": mode,
+                        }
+                    )
     return merged
 
 
