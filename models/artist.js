@@ -97,6 +97,12 @@ async function extractArtistInfo(artist) {
  * @param {object} artistObj - The artist object from parsing.
  * @returns {Promise<number|null>} The artist ID.
  */
+/**
+ * Finds an existing artist or inserts a new one into the database.
+ * @param {import('@supabase/supabase-js').SupabaseClient} supabase - The Supabase client.
+ * @param {object} artistObj - The artist object from parsing.
+ * @returns {Promise<number|null>} The artist ID.
+ */
 async function findOrInsertArtist(supabase, artistObj) {
     let artistName = (artistObj.name || '').trim();
     if (!artistName) return null;
@@ -180,9 +186,97 @@ async function findOrInsertArtist(supabase, artistObj) {
     return newArtistId;
 }
 
+/**
+ * Enhanced version of insertOrUpdateArtist for timetable imports
+ * Inserts or updates an artist in the database with SoundCloud data
+ * @param {import('@supabase/supabase-js').SupabaseClient} supabase - The Supabase client
+ * @param {object} artistData - Basic artist data with name
+ * @param {object} soundCloudData - Optional SoundCloud data for enrichment
+ * @param {boolean} dryRun - Whether to perform actual database operations
+ * @returns {Promise<object>} Object with artist ID
+ */
+async function insertOrUpdateArtist(supabase, artistData, soundCloudData = null, dryRun = false) {
+    try {
+        // Advanced name normalization for search
+        const normName = normalizeNameEnhanced(artistData.name);
+        
+        // Check for duplicates by SoundCloud ID if available
+        if (soundCloudData && soundCloudData.soundcloud_id) {
+            const { data: existingByExternal, error: extError } = await supabase
+                .from('artists')
+                .select('id')
+                .eq('external_links->soundcloud->>id', String(soundCloudData.soundcloud_id));
+            if (extError) throw extError;
+            if (existingByExternal && existingByExternal.length > 0) {
+                console.log(`➡️ Existing artist found by SoundCloud ID: "${artistData.name}" (id=${existingByExternal[0].id})`);
+                return { id: existingByExternal[0].id };
+            }
+        }
+        
+        // Otherwise, check for duplicates by name (normalized)
+        console.log(`🔍 Checking if artist "${artistData.name}" already exists...`);
+        const { data: existingArtist, error: fetchError } = await supabase
+            .from('artists')
+            .select('id, name, external_links')
+            .ilike('name', normName)
+            .single();
+        if (fetchError && fetchError.code !== 'PGRST116') {
+            console.log(`❌ Error while searching for artist: ${fetchError.message}`);
+            throw fetchError;
+        }
+        
+        if (dryRun) {
+            console.log(`[DRY_RUN] Would have inserted/updated artist: ${artistData.name}`);
+            return { id: `dryrun_artist_${normName}` };
+        }
+        
+        // Prepare SoundCloud external links for JSONB
+        let external_links = existingArtist && existingArtist.external_links ? { ...existingArtist.external_links } : {};
+        if (soundCloudData) {
+            external_links.soundcloud = {
+                link: soundCloudData.soundcloud_permalink,
+                id: String(soundCloudData.soundcloud_id)
+            };
+        }
+        
+        // Build the enriched artist object
+        const artistRecord = {
+            name: normName,
+            image_url: soundCloudData ? soundCloudData.image_url : undefined,
+            description: soundCloudData ? soundCloudData.description : undefined,
+            external_links: Object.keys(external_links).length > 0 ? external_links : undefined
+        };
+        
+        if (existingArtist) {
+            // Update
+            const { error: updateError } = await supabase
+                .from('artists')
+                .update(artistRecord)
+                .eq('id', existingArtist.id)
+                .select();
+            if (updateError) throw updateError;
+            console.log(`✅ Updated artist: ${artistRecord.name} (ID: ${existingArtist.id})`);
+            return { id: existingArtist.id };
+        } else {
+            // Insertion
+            const { data: inserted, error: insertError } = await supabase
+                .from('artists')
+                .insert(artistRecord)
+                .select();
+            if (insertError || !inserted) throw insertError || new Error("Could not insert artist");
+            console.log(`✅ Inserted new artist: ${artistRecord.name} (ID: ${inserted[0].id})`);
+            return { id: inserted[0].id };
+        }
+    } catch (error) {
+        console.log(`❌ Error inserting/updating artist "${artistData.name}": ${error.message}`);
+        throw error;
+    }
+}
+
 export default {
     getBestImageUrl,
     findOrInsertArtist,
+    insertOrUpdateArtist,
     searchArtist,
     extractArtistInfo,
 };
