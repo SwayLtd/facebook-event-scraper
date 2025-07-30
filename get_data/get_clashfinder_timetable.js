@@ -77,19 +77,18 @@ async function fetchTimetableCSV(festivalId, publicKey) {
     return res.data;
 }
 
-async function main() {
-    const searchText = process.argv[2];
-    if (!searchText) {
-        console.error('Usage: node get_clashfinder_timetable.js "nom du festival"');
-        process.exit(1);
-    }
+// Main function exported for use as module
+export async function getClashfinderTimetable(searchText, options = {}) {
+    const { saveFile = true, outputDir = '.', silent = false } = options;
+    
+    if (!silent) console.log(`[CLASHFINDER] Searching for festival: ${searchText}`);
+    
     const publicKey = generatePublicKey(USERNAME, PRIVATE_KEY);
     let festivalsRaw;
     try {
         festivalsRaw = await fetchAllClashfinders(publicKey);
     } catch (e) {
-        console.error('Erreur lors de la récupération des clashfinders:', e.message);
-        process.exit(1);
+        throw new Error(`Failed to fetch clashfinders: ${e.message}`);
     }
     // Adapt to actual API response structure
     let festivals;
@@ -103,26 +102,59 @@ async function main() {
         // Convert object to array of festival objects, adding the id as a property
         festivals = Object.entries(festivalsRaw).map(([id, fest]) => ({ id, ...fest }));
     } else {
-        console.error('Unknown API response format for festivals:', festivalsRaw);
-        process.exit(1);
+        throw new Error('Unknown API response format for festivals');
     }
+    
     const bestFestival = findBestFestival(festivals, searchText);
     if (!bestFestival) {
-        console.error('Aucun festival trouvé correspondant à la recherche.');
-        process.exit(1);
+        throw new Error('No festival found matching the search criteria');
     }
-    console.log(`Festival sélectionné : ${bestFestival.name} (id: ${bestFestival.id})`);
-    console.log(`Lien Clashfinder : https://clashfinder.com/s/${bestFestival.id}/`);
+    
+    if (!silent) {
+        console.log(`[CLASHFINDER] Festival selected: ${bestFestival.name} (id: ${bestFestival.id})`);
+        console.log(`[CLASHFINDER] Clashfinder link: https://clashfinder.com/s/${bestFestival.id}/`);
+    }
+    
     let csv;
     try {
         csv = await fetchTimetableCSV(bestFestival.id, publicKey);
     } catch (e) {
-        console.error('Erreur lors de la récupération du CSV:', e.message);
-        process.exit(1);
+        throw new Error(`Failed to fetch CSV: ${e.message}`);
     }
-    const filename = `clashfinder_${bestFestival.id}_timetable.csv`;
-    fs.writeFileSync(filename, csv);
-    console.log(`CSV sauvegardé dans ${filename}`);
+    
+    let filename = null;
+    if (saveFile) {
+        filename = `${outputDir}/clashfinder_${bestFestival.id}_timetable.csv`;
+        fs.writeFileSync(filename, csv);
+        if (!silent) console.log(`[CLASHFINDER] CSV saved to ${filename}`);
+    }
+    
+    return {
+        festival: bestFestival,
+        csv: csv,
+        filename: filename,
+        clashfinderUrl: `https://clashfinder.com/s/${bestFestival.id}/`
+    };
 }
 
-main();
+// CLI usage when run directly
+async function main() {
+    const searchText = process.argv[2];
+    if (!searchText) {
+        console.error('Usage: node get_clashfinder_timetable.js "nom du festival"');
+        process.exit(1);
+    }
+    
+    try {
+        await getClashfinderTimetable(searchText);
+        console.log(`[SUCCESS] Festival data retrieved successfully!`);
+    } catch (error) {
+        console.error(`[ERROR] ${error.message}`);
+        process.exit(1);
+    }
+}
+
+// Run main if called directly
+if (import.meta.url === `file://${process.argv[1]}` || process.argv[1].endsWith('get_clashfinder_timetable.js')) {
+    main();
+}

@@ -232,7 +232,43 @@ function main() {
     console.log(`[LOG] Extraction finished.`);
 }
 
+/**
+ * Extract events from CSV content and return as JSON data
+ * @param {string} csvFilePath - Path to the CSV file
+ * @param {string} outputPath - Optional output path for JSON file
+ * @returns {Array} Array of extracted events
+ */
+function extractEventsFromCsv(csvFilePath, outputPath = null) {
+    const events = loadCsv(csvFilePath);
+    if (!events.length) {
+        throw new Error('No valid events found in CSV file');
+    }
+    const merged = groupEvents(events);
+    merged.sort((a, b) => {
+        if (a.time === b.time) return a.stage.localeCompare(b.stage);
+        return a.time.localeCompare(b.time);
+    });
+    
+    if (outputPath) {
+        toJson(merged, outputPath);
+    }
+    
+    return merged;
+}
+
 // Check if this script is being run directly
 if (import.meta.url === `file://${process.argv[1]}` || process.argv[1].endsWith('extract_events_timetable.js')) {
     main();
 }
+
+// Export functions for use as a module
+export {
+    loadCsv,
+    groupEvents,
+    toJson,
+    parseDatetime,
+    cleanName,
+    detectMode,
+    detectPresents,
+    extractEventsFromCsv
+};
