@@ -353,6 +353,12 @@ async function processFestivalTimetable(supabase, eventId, timetableData, clashf
     logMessage(`Festival timetable import complete: ${processedCount} artists processed, ${successCount} imported, ${soundCloudFoundCount} with SoundCloud`);
     console.log(`✅ Festival import complete: ${processedCount} artists, ${soundCloudFoundCount} found on SoundCloud`);
     
+    // Process genres for all imported artists in batch mode
+    if (!dryRun && Object.keys(artistNameToId).length > 0) {
+        console.log(`\n🎵 Processing genres for ${Object.keys(artistNameToId).length} festival artists...`);
+        await processFestivalArtistGenres(supabase, artistNameToId, options);
+    }
+    
     return {
         processedCount,
         successCount,
@@ -370,5 +376,109 @@ export default {
     generateTimetableStatistics,
     logTimetableStatistics,
     processTimetableData,
-    processFestivalTimetable
+    processFestivalTimetable,
+    processFestivalArtistGenres
 };
+
+/**
+ * Processes music genres for festival artists using optimized batch processing
+ * 
+ * IMPORTANT: Each artist receives individual genre analysis via Last.fm API.
+ * Batch processing is ONLY used for API rate limiting optimization, not genre grouping.
+ * Artists from the same stage/batch can have completely different genres.
+ * 
+ * Example: Main Stage batch could contain:
+ * - Martin Garrix (Big Room House, Progressive House)
+ * - Deadmau5 (Progressive House, Electro House) 
+ * - Armin van Buuren (Trance, Progressive Trance)
+ * - David Guetta (Commercial House, Pop Dance)
+ * 
+ * @param {import('@supabase/supabase-js').SupabaseClient} supabase - The Supabase client
+ * @param {Object} artistNameToId - Mapping of artist names to IDs
+ * @param {Object} options - Processing options including logMessage, banned genres, etc.
+ */
+async function processFestivalArtistGenres(supabase, artistNameToId, options) {
+    const { logMessage = console.log } = options;
+    
+    try {
+        // Import genre processing utilities
+        const genreModule = await import('./genre.js');
+        
+        // Get banned genres list - these are filtered out to maintain data quality
+        const bannedGenres = ["90s", "Disco", "Dub", "Guaracha", "Bootleg", "Montreal", "Lebanon", "Stereo", "Berghain", "Jaw", "Not", "Monster", "Dream", "Drone", "Eurodance", "Storytelling", "Nostalgic", "Guitar", "Art", "Future", "Romania", "Drums", "Atmosphere", "Emo", "Lyrical", "Indonesia", "Mood", "Mellow", "Work", "Feminism", "Download", "This", "Poetry", "Sound", "Malibu", "Twek", "Money", "Orgasm", "Cover", "Viral", "Sexy", "Z", "Nas", "Weird", "P", "Indonesion", "Funky", "Tearout", "Uplifting", "Love", "Core", "Violin", "Simpsons", "Riddim", "World Music", "Dancehall", "Gbr", "Fußball", "German", "New", "Eargasm", "Ecstasy", "Coldwave", "Brazilian", "Beat", "Song", "Soulful", "Smooth", "Contemporary", "Ballad", "Modern", "Beyonce", "Occult", "Evil", "Vinyl", "2000's", "Dog", "Gangsta", "Hair", "Soundtrack", "Hard Drance", "Bassline", "Queer", "Interview", "Krautrock", "Soundscape", "Darkwave", "Atmospheric", "Americana", "Mpc", "Detroit", "Fast", "Argentina", "Emotional", "Germany", "Frankfurt", "Karlsruhe", "Driving", "Cosmic", "Summer", "Basement", "Beachbar", "Party", "Producer", "Alive", "Pulse", "Coding", "Offensive", "Alex", "Time", "Soho", "Spring", "Aus", "X", "Modern Dancehall", "Elektra", "Piano", "Italo", "Synth", "Ghetto", "Moombahton", "Ghetto", "Chicago", "Happy", "80s", "Munich", "Melancholic", "Samples", "Madrid", "Amapiano", "00s", "Breakbeat", "Retro", "Breakz", "Spain", "Pandora", "Tropical", "Latin Pop", "Night", "Aussie", "Australian", "Fire", "Hot", "Spotify", "Ur", "2step", "Lonely", "Sad", "Angry", "Heavy", "Hex", "A", "Complex", "Freestyle", "Mainstream", "All", "Long", "Antifa", "Horror", "Scary", "Japan", "Popular", "Memphis", "Nostalgia", "Ost", "Speech", "Shoegaze", "Orchestral", "London", "Kinky", "Tresor", "Chillout", "Cool", "Sun", "Ethnic", "Banjo", "Trippy", "Persian", "Traditional", "Persian Traditional", "Bochka", "Oh", "God", "Kids", "Compilation", "Ghost", "Space", "Christ", "Based", "De", "Juke", "Gent", "Valearic", "Ebm", "Sac-sha", "Amsterdam", "Noise", "Eclectic", "Hi-nrg", "Antwerp", "Feelgood", "Body", "Indie Dance", "Barcelona", "Fusion", "C", "Comedy", "Zephyr", "E", "Tiktok", "Brasil", "O", "It", "Us", "Yes", "Scantraxx", "Qlimax", "Style", "Italian", "Spiritual", "Quiet", "Best", "Denver", "Colorado", "Soca", "Bobo", "G", "Zouk", "Booba", "Game", "Cello", "Jam", "Hardtekk", "Break", "Goa", "Boogie", "Idm", "Haldtime", "Spanish", "Screamo", "Ra", "Jersey", "Organ", "Palestine", "Congo", "Healing", "Minecraft", "Cyberpunk", "Television", "Film", "Cursed", "Crossbreed", "Funama", "Kuduro", "Mashups", "Collaboration", "France", "Alien", "Banger", "Tool", "Insomnia", "Flow", "Kafu", "Adele", "Makina", "Manchester", "Salford", "Macedonia", "Japanese", "Relax", "Relaxing", "Relaxation", "Is", "Bdr", "Bier", "Jckson", "Jersey Club", "Big Room", "Brooklyn", "Coffee", "Green", "Tekkno", "Flips", "Sia", "Ccr", "Ai", "Unicorn", "Q", "Aversion", "Gym", "Get", "Buningman", "Rotterdam", "Matrix", "Indian", "Brazil", "S", "Hybrid", "Beats", "Singer", "Ans", "Theme", "Future Bass", "Club House", "Glam", "Aggressive", "Prog", "Technoid", "Funny", "Raggamuffin", "Bangface", "Bandcamp", "Bristol", "Organic", "Brazilian Phonk", "Revolution", "Afterlife", "Rockabilly", "Tune", "Brixton", "Psydub", "Harmony", "Montana", "Imaginarium", "Cheesy", "Choral"];
+        
+        // Process artists in small batches to respect API rate limits
+        // Each artist gets individual Last.fm analysis regardless of batch grouping
+        const artistIds = Object.values(artistNameToId);
+        const batchSize = 8; // Slightly smaller batches for better API stability
+        let processedCount = 0;
+        let genresAssigned = 0;
+        
+        logMessage(`[Genres] Processing ${artistIds.length} festival artists individually in batches of ${batchSize} (API rate limiting only)...`);
+        
+        for (let i = 0; i < artistIds.length; i += batchSize) {
+            const batch = artistIds.slice(i, i + batchSize);
+            
+            // Fetch artist data for this batch
+            const { data: artistsData, error: fetchError } = await supabase
+                .from('artists')
+                .select('*')
+                .in('id', batch);
+                
+            if (fetchError) {
+                console.error(`[Genres] Error fetching artist data for batch:`, fetchError);
+                continue;
+            }
+            
+            // Process each artist individually within this batch
+            // Each artist receives unique genre analysis via Last.fm API
+            for (const artistData of artistsData) {
+                try {
+                    logMessage(`[Genres] Analyzing individual artist: ${artistData.name}...`);
+                    
+                    // Individual Last.fm API call for this specific artist
+                    // Result: artist-specific genres (e.g., "Progressive House", "Trance") 
+                    const genres = await genreModule.default.processArtistGenres(
+                        supabase,
+                        artistData,
+                        process.env.LASTFM_API_KEY,
+                        bannedGenres
+                    );
+                    
+                    // Link discovered genres to this specific artist
+                    for (const genreObj of genres) {
+                        if (genreObj.id) {
+                            await genreModule.default.linkArtistGenre(supabase, artistData.id, genreObj.id);
+                            genresAssigned++;
+                        } else if (genreObj.name && genreObj.description) {
+                            // Insert new genre if not exists
+                            const genreId = await genreModule.default.insertGenreIfNew(supabase, genreObj);
+                            await genreModule.default.linkArtistGenre(supabase, artistData.id, genreId);
+                            genresAssigned++;
+                        }
+                    }
+                    
+                    processedCount++;
+                    logMessage(`[Genres] ✅ ${artistData.name} → ${genres.length} genre(s) assigned`);
+                    
+                } catch (genreError) {
+                    console.error(`[Genres] Error processing genres for artist ${artistData.name}:`, genreError);
+                }
+            }
+            
+            // API rate limiting delay between batches (not related to genre similarity)
+            if (i + batchSize < artistIds.length) {
+                await new Promise(resolve => setTimeout(resolve, 1500)); // 1.5 second delay for API stability
+            }
+            
+            logMessage(`[Genres] Batch ${Math.ceil((i + batchSize) / batchSize)}/${Math.ceil(artistIds.length / batchSize)}: ${Math.min(i + batchSize, artistIds.length)}/${artistIds.length} artists processed`);
+        }
+        
+        logMessage(`[Genres] Festival individual genre processing complete: ${processedCount} artists analyzed, ${genresAssigned} unique genre assignments created`);
+        console.log(`🎵 Festival genres complete: ${processedCount} artists individually processed, ${genresAssigned} genre links`);
+        
+    } catch (error) {
+        console.error(`[Genres] Error in festival genre processing:`, error);
+        logMessage(`[Genres] Error in festival genre processing: ${error.message}`);
+    }
+}
