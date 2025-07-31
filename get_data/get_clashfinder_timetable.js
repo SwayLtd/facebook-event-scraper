@@ -136,15 +136,15 @@ function findBestFestival(festivals, searchText, minSimilarity = 30, originalSea
         const base = fest.desc ? fest.desc : fest.name;
         let score = stringSimilarity(searchText, base);
         
-        // Year matching bonus - prioritize festivals from the same year
+        // STRICT YEAR VALIDATION: Reject festivals from different years
         if (searchYear) {
             const festYear = base.match(/\b(20\d{2})\b/)?.[1];
-            if (festYear === searchYear) {
-                score += 10; // Bonus for year match
-            } else if (festYear) {
-                // Penalty for different year (but still allow if similarity is very high)
-                const yearDiff = Math.abs(parseInt(searchYear) - parseInt(festYear));
-                score -= Math.min(yearDiff * 2, 20); // Max 20 point penalty
+            if (festYear && festYear !== searchYear) {
+                // Completely reject festivals from different years
+                console.log(`🚫 Rejecting ${fest.name} (${festYear}) - year mismatch with search (${searchYear})`);
+                continue; // Skip this festival entirely
+            } else if (festYear === searchYear) {
+                score += 10; // Bonus for exact year match
             }
         }
         
