@@ -359,6 +359,45 @@ async function processFestivalTimetable(supabase, eventId, timetableData, clashf
         await processFestivalArtistGenres(supabase, artistNameToId, options);
     }
     
+    // Auto-detect and update event end time if not already set
+    if (!dryRun) {
+        console.log(`\n🏁 Detecting event end time from timetable...`);
+        const detectedEndTime = detectEventEndTimeFromTimetable(timetableData, options);
+        
+        if (detectedEndTime) {
+            // Check if event already has an end_date_time
+            const { data: eventData, error: fetchError } = await supabase
+                .from('events')
+                .select('end_date_time')
+                .eq('id', eventId)
+                .single();
+            
+            if (fetchError) {
+                console.error('[End Time Update] Error fetching event data:', fetchError);
+            } else if (!eventData.end_date_time) {
+                // Update event with detected end time
+                const { error: updateError } = await supabase
+                    .from('events')
+                    .update({ end_date_time: detectedEndTime })
+                    .eq('id', eventId);
+                
+                if (updateError) {
+                    console.error('[End Time Update] Error updating event end time:', updateError);
+                    logMessage(`[End Time Update] Failed to update event end time: ${updateError.message}`);
+                } else {
+                    logMessage(`[End Time Update] ✅ Event end time updated to: ${detectedEndTime}`);
+                    console.log(`🏁 Event end time automatically set to: ${new Date(detectedEndTime).toLocaleString()}`);
+                }
+            } else {
+                logMessage(`[End Time Update] Event already has end_date_time: ${eventData.end_date_time} (not overriding)`);
+                console.log(`🏁 Event already has end time set, skipping auto-detection`);
+            }
+        } else {
+            logMessage(`[End Time Update] No valid end time could be detected from timetable`);
+            console.log(`⚠️  Could not detect event end time from timetable data`);
+        }
+    }
+    
     return {
         processedCount,
         successCount,
@@ -366,7 +405,8 @@ async function processFestivalTimetable(supabase, eventId, timetableData, clashf
         artistNameToId,
         stats,
         stages,
-        festival_days
+        festival_days,
+        detectedEndTime: dryRun ? null : detectEventEndTimeFromTimetable(timetableData, options)
     };
 }
 
@@ -377,7 +417,8 @@ export default {
     logTimetableStatistics,
     processTimetableData,
     processFestivalTimetable,
-    processFestivalArtistGenres
+    processFestivalArtistGenres,
+    detectEventEndTimeFromTimetable
 };
 
 /**
@@ -480,5 +521,91 @@ async function processFestivalArtistGenres(supabase, artistNameToId, options) {
     } catch (error) {
         console.error(`[Genres] Error in festival genre processing:`, error);
         logMessage(`[Genres] Error in festival genre processing: ${error.message}`);
+    }
+}
+
+/**
+ * Detects the event end time from timetable data by finding the latest performance
+ * 
+ * Analyzes all performances in the timetable to determine when the event should end:
+ * 1. Looks for performances with explicit end_time
+ * 2. For performances without end_time, estimates duration (defaults to 1 hour)
+ * 3. Returns the latest end time found across all performances
+ * 
+ * @param {Array} timetableData - Array of performance objects with time/end_time
+ * @param {Object} options - Options including logMessage function
+ * @returns {string|null} ISO 8601 date string of latest end time, or null if no valid times found
+ */
+function detectEventEndTimeFromTimetable(timetableData, options = {}) {
+    const { logMessage = console.log } = options;
+    
+    try {
+        if (!timetableData || !Array.isArray(timetableData) || timetableData.length === 0) {
+            logMessage('[End Time Detection] No timetable data provided');
+            return null;
+        }
+        
+        let latestEndTime = null;
+        let performancesWithTimes = 0;
+        let performancesWithEndTimes = 0;
+        
+        logMessage(`[End Time Detection] Analyzing ${timetableData.length} performances to find event end time...`);
+        
+        for (const performance of timetableData) {
+            let endTime = null;
+            
+            // Case 1: Performance has explicit end_time
+            if (performance.end_time && performance.end_time.trim() !== '') {
+                endTime = performance.end_time;
+                performancesWithEndTimes++;
+            }
+            // Case 2: Performance has start time but no end_time - estimate 1 hour duration
+            else if (performance.time && performance.time.trim() !== '') {
+                try {
+                    const startTime = new Date(performance.time);
+                    if (!isNaN(startTime.getTime())) {
+                        // Add 1 hour (default performance duration)
+                        const estimatedEndTime = new Date(startTime.getTime() + (60 * 60 * 1000));
+                        endTime = estimatedEndTime.toISOString();
+                        performancesWithTimes++;
+                    }
+                } catch (error) {
+                    logMessage(`[End Time Detection] Invalid start time format for ${performance.name}: ${performance.time}`);
+                    continue;
+                }
+            }
+            
+            // Update latest end time if this one is later
+            if (endTime) {
+                try {
+                    const endTimeDate = new Date(endTime);
+                    if (!isNaN(endTimeDate.getTime())) {
+                        if (!latestEndTime || endTimeDate > new Date(latestEndTime)) {
+                            latestEndTime = endTime;
+                            logMessage(`[End Time Detection] New latest end time: ${endTime} (${performance.name} on ${performance.stage})`);
+                        }
+                    }
+                } catch (error) {
+                    logMessage(`[End Time Detection] Invalid end time format: ${endTime}`);
+                }
+            }
+        }
+        
+        logMessage(`[End Time Detection] Analysis complete:`);
+        logMessage(`  - Performances with explicit end_time: ${performancesWithEndTimes}`);
+        logMessage(`  - Performances with estimated end_time: ${performancesWithTimes}`);
+        logMessage(`  - Event end time detected: ${latestEndTime || 'None found'}`);
+        
+        if (latestEndTime) {
+            const endDate = new Date(latestEndTime);
+            logMessage(`🏁 Event end time: ${endDate.toLocaleString()} (${latestEndTime})`);
+        }
+        
+        return latestEndTime;
+        
+    } catch (error) {
+        console.error('[End Time Detection] Error detecting event end time:', error);
+        logMessage(`[End Time Detection] Error: ${error.message}`);
+        return null;
     }
 }
