@@ -95,16 +95,26 @@ async function main() {
     try {
         const eventUrl = process.argv[2];
         const skipArtists = process.argv.includes('--no-artists') || process.argv.includes('--skip-artists');
+        const forceFestival = process.argv.includes('--festival');
         
         if (!eventUrl) {
             console.error('❌ Please specify a Facebook Events URL. Example:');
             console.error('   node import_event.js https://www.facebook.com/events/1234567890');
             console.error('   node import_event.js https://www.facebook.com/events/1234567890 --no-artists');
+            console.error('   node import_event.js https://www.facebook.com/events/1234567890 --festival');
+            console.error('');
+            console.error('Options:');
+            console.error('   --no-artists    Skip artist import (faster for event-only import)');
+            console.error('   --festival      Force import as festival (enables timetable search even without end date)');
             process.exit(1);
         }
 
         if (skipArtists) {
             console.log('🚫 Artist import disabled by --no-artists flag');
+        }
+        
+        if (forceFestival) {
+            console.log('🎪 Festival mode FORCED by --festival flag');
         }
 
         console.log("🔎 Scraping the Facebook event...");
@@ -113,7 +123,7 @@ async function main() {
 
         // === FESTIVAL DETECTION ===
         console.log("\n🎪 Analyzing event to detect if it's a festival...");
-        const festivalDetection = detectFestival(eventData);
+        const festivalDetection = detectFestival(eventData, { forceFestival });
         logMessage(`Festival detection result: ${festivalDetection.isFestival ? 'FESTIVAL' : 'SIMPLE EVENT'} (confidence: ${festivalDetection.confidence}%)`);
         logMessage(`Detection reasons: ${festivalDetection.reasons.join(', ')}`);
         
@@ -126,10 +136,13 @@ async function main() {
         let timetableData = null;
         let clashfinderResult = null;
         
-        // Primary criterion: Duration > 24 hours means it's a festival
-        if (festivalDetection.duration && festivalDetection.duration.hours > 24) {
+        // Primary criterion: Forced festival mode OR Duration > 24 hours OR Known festival
+        if (forceFestival || festivalDetection.isFestival || 
+            (festivalDetection.duration && festivalDetection.duration.hours > 24)) {
             importStrategy = 'festival';
-            console.log(`🎪 Event detected as FESTIVAL (${festivalDetection.duration.hours.toFixed(1)}h > 24h) - will attempt timetable import`);
+            const durationText = festivalDetection.duration ? 
+                `${festivalDetection.duration.hours.toFixed(1)}h` : 'unknown duration';
+            console.log(`🎪 Event detected as FESTIVAL (${durationText}) - will attempt timetable import`);
             
             // Try to get timetable from Clashfinder
             const festivalName = festivalDetection.festivalName || extractFestivalName(eventData.name);
@@ -159,7 +172,9 @@ async function main() {
                 importStrategy = 'simple_fallback';
             }
         } else {
-            console.log(`📝 Event detected as SIMPLE EVENT - will use OpenAI artist parsing`);
+            const durationText = festivalDetection.duration ? 
+                `${festivalDetection.duration.hours.toFixed(1)}h` : 'no duration data';
+            console.log(`📝 Event detected as SIMPLE EVENT (${durationText}) - will use OpenAI artist parsing`);
         }
 
         const eventName = eventData.name || null;
@@ -199,12 +214,14 @@ async function main() {
                 if (venueLatitude && venueLongitude) {
                     const distance = geoUtils.haversineDistance(venueLatitude, venueLongitude, googleLat, googleLng);
                     console.log(`Distance between FB and Google: ${distance.toFixed(2)} meters`);
-                    const threshold = 500;
+                    // Different thresholds for festivals vs regular events
+                    const threshold = (importStrategy === 'festival') ? 5000 : 500; // 5km for festivals, 500m for regular events
                     if (distance < threshold) {
                         venueAddress = googleResult.formatted_address;
                         console.log(`✅ Using Google address: ${venueAddress}`);
                     } else {
-                        console.log("⚠️ Google address is too far from FB coordinates.");
+                        const eventTypeText = (importStrategy === 'festival') ? 'festival' : 'event';
+                        console.log(`⚠️ Google address is too far from FB coordinates for ${eventTypeText} (${distance.toFixed(0)}m > ${threshold}m).`);
                     }
                 } else {
                     venueAddress = googleResult.formatted_address;

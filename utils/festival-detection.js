@@ -6,9 +6,12 @@ import { DateTime } from 'luxon';
 /**
  * Detects if an event is a festival based on duration (>24h) and other criteria
  * @param {object} eventData - Facebook event data with startTimestamp and endTimestamp
+ * @param {object} options - Detection options including forceFestival flag
  * @returns {object} Detection result with confidence score and details
  */
-export function detectFestival(eventData) {
+export function detectFestival(eventData, options = {}) {
+    const { forceFestival = false } = options;
+    
     const result = {
         isFestival: false,
         confidence: 0,
@@ -22,9 +25,48 @@ export function detectFestival(eventData) {
         return result;
     }
 
-    // Check if we have valid timestamps
+    // If festival mode is forced, set high confidence
+    if (forceFestival) {
+        result.isFestival = true;
+        result.confidence = 95;
+        result.reasons.push('Festival mode FORCED by --festival flag');
+    }
+
+    // Known festivals list (case-insensitive matching)
+    const knownFestivals = [
+        'let it roll', 'tomorrowland', 'ultra', 'coachella', 'burning man',
+        'glastonbury', 'lollapalooza', 'bonnaroo', 'electric daisy carnival',
+        'edc', 'defqon', 'qlimax', 'mysteryland', 'awakenings', 'dour',
+        'rock werchter', 'pukkelpop', 'graspop', 'rampage', 'rampage open air',
+        'nature one', 'love parade', 'fusion', 'boom festival', 'ozora',
+        'psytrance', 'hadra', 'antaris', 'voov', 'garbicz', 'fusion festival'
+    ];
+
+    // Check if event name matches known festivals
+    const eventName = eventData.name || '';
+    const eventNameLower = eventName.toLowerCase();
+    
+    for (const festivalName of knownFestivals) {
+        if (eventNameLower.includes(festivalName)) {
+            if (!forceFestival) { // Don't override forced mode
+                result.isFestival = true;
+                result.confidence = Math.max(result.confidence, 85);
+            }
+            result.reasons.push(`Known festival detected: "${festivalName}"`);
+            break;
+        }
+    }
+
+    // Check if we have valid timestamps for duration calculation
     if (!eventData.startTimestamp || !eventData.endTimestamp) {
-        result.reasons.push('Missing start or end timestamp');
+        if (!result.isFestival) { // Only add this reason if not already detected as festival
+            result.reasons.push('Missing start or end timestamp - unable to calculate duration');
+        }
+        // Still return result as we might have detected it as known festival or forced mode
+        if (result.isFestival) {
+            // Extract potential festival name for Clashfinder search
+            result.festivalName = extractFestivalName(eventName);
+        }
         return result;
     }
 
@@ -50,7 +92,6 @@ export function detectFestival(eventData) {
     }
 
     // Secondary criteria for confidence boosting
-    const eventName = eventData.name || '';
     const eventDescription = eventData.description || '';
     const combinedText = `${eventName} ${eventDescription}`.toLowerCase();
 

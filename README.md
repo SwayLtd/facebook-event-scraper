@@ -105,9 +105,19 @@ node add_event.js https://www.facebook.com/events/1234567890 --priority=10
 # Direct processing (bypasses queue)
 node import_event.js https://www.facebook.com/events/1234567890
 
+# Skip artist import (faster)
+node import_event.js https://www.facebook.com/events/1234567890 --no-artists
+
+# Force festival mode (even without end date)
+node import_event.js https://www.facebook.com/events/1234567890 --festival
+
 # Dry run mode
 DRY_RUN=true node import_event.js https://www.facebook.com/events/1234567890
 ```
+
+**Options:**
+- `--no-artists`: Skip artist import (faster for event-only import)
+- `--festival`: Force import as festival (enables timetable search even without end date)
 
 ### Festival Timetable Processing
 ```bash
