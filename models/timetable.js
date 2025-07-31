@@ -360,9 +360,10 @@ async function processFestivalTimetable(supabase, eventId, timetableData, clashf
     }
     
     // Auto-detect and update event end time if not already set
+    let detectedEndTime = null;
     if (!dryRun) {
         console.log(`\n🏁 Detecting event end time from timetable...`);
-        const detectedEndTime = detectEventEndTimeFromTimetable(timetableData, options);
+        detectedEndTime = detectEventEndTimeFromTimetable(timetableData, options);
         
         if (detectedEndTime) {
             // Check if event already has an end_date_time
@@ -406,7 +407,7 @@ async function processFestivalTimetable(supabase, eventId, timetableData, clashf
         stats,
         stages,
         festival_days,
-        detectedEndTime: dryRun ? null : detectEventEndTimeFromTimetable(timetableData, options)
+        detectedEndTime: detectedEndTime
     };
 }
 
@@ -548,8 +549,12 @@ function detectEventEndTimeFromTimetable(timetableData, options = {}) {
         let latestEndTime = null;
         let performancesWithTimes = 0;
         let performancesWithEndTimes = 0;
+        let latestPerformance = null;
         
         logMessage(`[End Time Detection] Analyzing ${timetableData.length} performances to find event end time...`);
+        
+        // Collect all end times first, then find the maximum
+        const endTimes = [];
         
         for (const performance of timetableData) {
             let endTime = null;
@@ -575,15 +580,16 @@ function detectEventEndTimeFromTimetable(timetableData, options = {}) {
                 }
             }
             
-            // Update latest end time if this one is later
+            // Collect valid end times
             if (endTime) {
                 try {
                     const endTimeDate = new Date(endTime);
                     if (!isNaN(endTimeDate.getTime())) {
-                        if (!latestEndTime || endTimeDate > new Date(latestEndTime)) {
-                            latestEndTime = endTime;
-                            logMessage(`[End Time Detection] New latest end time: ${endTime} (${performance.name} on ${performance.stage})`);
-                        }
+                        endTimes.push({
+                            endTime: endTime,
+                            endTimeDate: endTimeDate,
+                            performance: performance
+                        });
                     }
                 } catch (error) {
                     logMessage(`[End Time Detection] Invalid end time format: ${endTime}`);
@@ -591,11 +597,23 @@ function detectEventEndTimeFromTimetable(timetableData, options = {}) {
             }
         }
         
+        // Find the latest end time
+        if (endTimes.length > 0) {
+            const latest = endTimes.reduce((max, current) => 
+                current.endTimeDate > max.endTimeDate ? current : max
+            );
+            latestEndTime = latest.endTime;
+            latestPerformance = latest.performance;
+        }
+        
         logMessage(`[End Time Detection] Analysis complete:`);
         logMessage(`  - Performances with explicit end_time: ${performancesWithEndTimes}`);
         logMessage(`  - Performances with estimated end_time: ${performancesWithTimes}`);
-        logMessage(`  - Event end time detected: ${latestEndTime || 'None found'}`);
-        
+        if (latestEndTime && latestPerformance) {
+            logMessage(`  - Event end time detected: ${latestEndTime} (${latestPerformance.name} on ${latestPerformance.stage})`);
+        } else {
+            logMessage(`  - Event end time detected: None found`);
+        }
         if (latestEndTime) {
             const endDate = new Date(latestEndTime);
             logMessage(`🏁 Event end time: ${endDate.toLocaleString()} (${latestEndTime})`);
