@@ -2,11 +2,38 @@ import fs from 'fs';
 import { parse } from 'csv-parse/sync';
 
 // Regex to detect performance modes inside names (excluding "presents"/"pres" which are handled specially)
-const MODE_PATTERN = /\b(B2B|B3B|F2F|VS|meet|feat|ft)\b/i;
+const MODE_PATTERN = /\s+(?:B2B|B3B|F2F|VS|b2b|b3b|f2f|vs|meet|w\/|feat|ft)\s+/i;
 // Regex to detect "presents" or "pres" patterns
 const PRESENTS_PATTERN = /\s+(presents|pres)\s+/i;
 // Regex to strip trailing suffixes A/V or (live)
 const SUFFIX_PATTERN = /\s+(A\/V|\(live\))$/i;
+
+// Known band/group names that contain "&" and should NOT be split
+const KNOWN_BANDS_WITH_AMPERSAND = [
+    'bigflo & oli',
+    'simon & garfunkel', 
+    'salt & pepper',
+    'bell & sebastien',
+    'above & beyond', // Special case - this one SHOULD be split sometimes
+];
+
+function shouldSplitOnAmpersand(name) {
+    const lowerName = name.toLowerCase().trim();
+    // Check if it's a known band name that shouldn't be split
+    for (const bandName of KNOWN_BANDS_WITH_AMPERSAND) {
+        if (lowerName === bandName) {
+            // Special case: "Above & Beyond" is both a group name AND used in collaborations
+            if (bandName === 'above & beyond') {
+                // If it's part of a longer string with more artists, split it
+                // Otherwise keep it as the group name
+                const parts = name.split(/\s+&\s+/);
+                return parts.length > 2; // Only split if more than 2 parts
+            }
+            return false; // Don't split known band names
+        }
+    }
+    return true; // Split other " & " cases
+}
 
 function parseDatetime(dtStr) {
     // Convert "YYYY/MM/DD HH:MM" to ISO 8601 "YYYY-MM-DDTHH:MM"
@@ -111,10 +138,10 @@ function groupEvents(events) {
         if (!grouped[key]) grouped[key] = [];
         grouped[key].push(ev.name);
     }
-    // Split regex for B2B, x, vs, meet, feat, etc. (with spaces)
-    // Note: "&" is excluded to keep band names like "Bigflo & Oli" intact
+    // Split logic for B2B, x, vs, meet, feat, etc. (with spaces)
+    // Note: "&" without spaces is excluded to keep band names like "Bigflo & Oli" intact
+    // Note: " & " with spaces IS included to detect B2B collaborations but only if not part of a known band name
     // Note: "presents"/"pres" is handled separately as a special performance mode
-    const splitRegex = /\s+(?:B2B|B3B|F2F|VS|x|vs|meet|w\/|feat|ft)\s+/i;
     const merged = [];
     for (const key in grouped) {
         const [start, end, stage] = key.split('|');
@@ -146,8 +173,27 @@ function groupEvents(events) {
                     performance_mode: '',
                 });
             } else {
-                const splitArtists = combinedName.split(splitRegex).map(cleanName).filter(Boolean);
-                console.log(`[LOG] Split result: ${splitArtists}`);
+                // Smart splitting logic
+                let splitArtists;
+                
+                // First try to split on B2B-style keywords (excluding &)
+                // Note: "x" is excluded because it's too generic and causes false positives
+                const nonAmpersandRegex = /\s+(?:B2B|B3B|F2F|VS|b2b|b3b|f2f|vs|meet|w\/|feat|ft)\s+/i;
+                const nonAmpersandSplit = combinedName.split(nonAmpersandRegex).map(cleanName).filter(Boolean);
+                
+                if (nonAmpersandSplit.length > 1) {
+                    // Found B2B keywords, use that split
+                    splitArtists = nonAmpersandSplit;
+                } else if (combinedName.includes(' & ') && shouldSplitOnAmpersand(combinedName)) {
+                    // Only split on " & " if it's not a known band name
+                    splitArtists = combinedName.split(/\s+&\s+/).map(cleanName).filter(Boolean);
+                } else {
+                    // No split needed or known band name
+                    splitArtists = [cleanName(combinedName)];
+                }
+                
+                console.log(`[LOG] Split result: ${JSON.stringify(splitArtists)}`);
+                
                 if (splitArtists.length > 1) {
                     for (const n of splitArtists) {
                         merged.push({
