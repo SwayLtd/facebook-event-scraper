@@ -95,15 +95,11 @@ async function extractArtistInfo(artist) {
  * Finds an existing artist or inserts a new one into the database.
  * @param {import('@supabase/supabase-js').SupabaseClient} supabase - The Supabase client.
  * @param {object} artistObj - The artist object from parsing.
+ * @param {string} lastfmApiKey - The Last.fm API key for genre processing.
+ * @param {string[]} bannedGenres - Array of banned genre names.
  * @returns {Promise<number|null>} The artist ID.
  */
-/**
- * Finds an existing artist or inserts a new one into the database.
- * @param {import('@supabase/supabase-js').SupabaseClient} supabase - The Supabase client.
- * @param {object} artistObj - The artist object from parsing.
- * @returns {Promise<number|null>} The artist ID.
- */
-async function findOrInsertArtist(supabase, artistObj) {
+async function findOrInsertArtist(supabase, artistObj, lastfmApiKey = null, bannedGenres = []) {
     let artistName = (artistObj.name || '').trim();
     if (!artistName) return null;
 
@@ -168,16 +164,20 @@ async function findOrInsertArtist(supabase, artistObj) {
 
     // 7. Processing and linking genres
     try {
-        const genres = await genreModel.processArtistGenres(supabase, inserted[0]);
-        for (const genreObj of genres) {
-            if (genreObj.id) {
-                await genreModel.linkArtistGenre(supabase, newArtistId, genreObj.id);
-                console.log(`   ↳ Linked artist to forced genre_id=${genreObj.id}`);
-            } else {
-                const genreId = await genreModel.insertGenreIfNew(supabase, genreObj);
-                await genreModel.linkArtistGenre(supabase, newArtistId, genreId);
-                console.log(`   ↳ Linked artist to genre_id=${genreId}`);
+        if (lastfmApiKey) {
+            const genres = await genreModel.processArtistGenres(supabase, inserted[0], lastfmApiKey, bannedGenres);
+            for (const genreObj of genres) {
+                if (genreObj.id) {
+                    await genreModel.linkArtistGenre(supabase, newArtistId, genreObj.id);
+                    console.log(`   ↳ Linked artist to forced genre_id=${genreObj.id}`);
+                } else {
+                    const genreId = await genreModel.insertGenreIfNew(supabase, genreObj);
+                    await genreModel.linkArtistGenre(supabase, newArtistId, genreId);
+                    console.log(`   ↳ Linked artist to genre_id=${genreId}`);
+                }
             }
+        } else {
+            console.log(`   ⚠️ No Last.fm API key provided, skipping genre processing for ${artistName}`);
         }
     } catch (err) {
         console.error("❌ Error processing genres for artist:", artistName, err);
@@ -233,10 +233,18 @@ async function insertOrUpdateArtist(supabase, artistData, soundCloudData = null,
         // Prepare SoundCloud external links for JSONB
         let external_links = existingArtist && existingArtist.external_links ? { ...existingArtist.external_links } : {};
         if (soundCloudData) {
-            external_links.soundcloud = {
-                link: soundCloudData.soundcloud_permalink,
-                id: String(soundCloudData.soundcloud_id)
-            };
+            // Handle both old format (soundcloud_permalink/soundcloud_id) and new format (external_links.soundcloud)
+            if (soundCloudData.external_links?.soundcloud) {
+                external_links.soundcloud = {
+                    link: soundCloudData.external_links.soundcloud.link,
+                    id: String(soundCloudData.external_links.soundcloud.id)
+                };
+            } else if (soundCloudData.soundcloud_permalink && soundCloudData.soundcloud_id) {
+                external_links.soundcloud = {
+                    link: soundCloudData.soundcloud_permalink,
+                    id: String(soundCloudData.soundcloud_id)
+                };
+            }
         }
         
         // Build the enriched artist object
@@ -421,7 +429,7 @@ async function processSimpleEventArtists(supabase, openai, eventId, eventDescrip
                         }
                     };
                     
-                    const artistId = await findOrInsertArtist(supabase, enhancedArtistObj);
+                    const artistId = await findOrInsertArtist(supabase, enhancedArtistObj, process.env.LASTFM_API_KEY, []);
                     if (artistId) {
                         processedArtistIds.push(artistId);
                         

@@ -303,37 +303,155 @@ async function processFestivalTimetable(supabase, eventId, timetableData, clashf
     const eventModule = await import('./event.js');
     const linkArtistsToEvent = eventModule.default.linkArtistsToEvent;
     
+    // Get existing artists to avoid unnecessary SoundCloud calls and DB operations
+    logMessage('🔍 Checking for existing artists and event links...');
+    
+    const allArtistNames = [...new Set(timetableData.map(entry => entry.name))];
+    
+    const { data: existingArtists, error: artistError } = await supabase
+        .from('artists')
+        .select('id, name')
+        .in('name', allArtistNames);
+    
+    if (artistError) {
+        throw new Error(`Failed to check existing artists: ${artistError.message}`);
+    }
+    
+    const existingArtistMap = new Map();
+    if (existingArtists) {
+        existingArtists.forEach(artist => {
+            existingArtistMap.set(artist.name.toLowerCase(), artist.id);
+        });
+    }
+    logMessage(`📊 Found ${existingArtistMap.size} existing artists out of ${allArtistNames.length} total`);
+    
+    // Check existing event_artist links for this event with performance details
+    const { data: existingEventArtists, error: linkError } = await supabase
+        .from('event_artist')
+        .select('artist_id, stage, start_time, end_time')
+        .eq('event_id', eventId);
+    
+    if (linkError) {
+        throw new Error(`Failed to check existing event artist links: ${linkError.message}`);
+    }
+    
+    // Create a map of existing links with performance details
+    const existingPerformanceMap = new Map();
+    if (existingEventArtists) {
+        existingEventArtists.forEach(link => {
+            const artistIds = Array.isArray(link.artist_id) ? link.artist_id : [link.artist_id];
+            artistIds.forEach(artistId => {
+                const key = `${artistId}_${link.stage || 'null'}_${link.start_time || 'null'}_${link.end_time || 'null'}`;
+                existingPerformanceMap.set(key, true);
+            });
+        });
+    }
+    logMessage(`🔗 Found ${existingPerformanceMap.size} existing event-artist performance links for this event`);
+    
+    // Filter out performances that already have complete artist-event links
+    const performancesToProcess = [];
+    const skippedPerformances = [];
+    
     for (const group of groupedPerformances) {
+        let allArtistsExist = true;
+        let allLinksExist = true;
+        
+        for (const perf of group) {
+            const artistId = existingArtistMap.get(perf.name.toLowerCase());
+            if (!artistId) {
+                allArtistsExist = false;
+                break;
+            }
+            
+            // Use the correct field names: perf.time maps to start_time, perf.end_time maps to end_time
+            // Database stores times in local timezone (Europe/Brussels), so don't convert to UTC
+            const startTime = perf.time + ':00+00:00'; // Convert to PostgreSQL timestamp format
+            const endTime = perf.end_time + ':00+00:00'; // Convert to PostgreSQL timestamp format  
+            const linkKey = `${artistId}_${perf.stage || 'null'}_${startTime}_${endTime}`;
+            if (!existingPerformanceMap.has(linkKey)) {
+                // Debug: Log why link wasn't found
+                if (group.length === 1) { // Only log for single performances to avoid spam
+                    logMessage(`🔍 Debug: Link not found for ${perf.name}`);
+                    logMessage(`   - Artist ID: ${artistId}`);
+                    logMessage(`   - Stage: ${perf.stage || 'null'}`);
+                    logMessage(`   - Start: ${perf.time || 'null'} -> ${startTime}`);
+                    logMessage(`   - End: ${perf.end_time || 'null'} -> ${endTime}`);
+                    logMessage(`   - Generated key: ${linkKey}`);
+                    
+                    // Show some existing keys for comparison
+                    const existingKeys = Array.from(existingPerformanceMap.keys()).slice(0, 3);
+                    logMessage(`   - Sample existing keys: ${existingKeys.join(', ')}`);
+                }
+                allLinksExist = false;
+                break;
+            }
+        }
+        
+        if (allArtistsExist && allLinksExist) {
+            skippedPerformances.push(group);
+            // Still add to artistNameToId for genre processing
+            group.forEach(perf => {
+                const artistId = existingArtistMap.get(perf.name.toLowerCase());
+                if (artistId) {
+                    artistNameToId[perf.name] = artistId;
+                }
+            });
+        } else {
+            performancesToProcess.push(group);
+        }
+    }
+    
+    logMessage(`⚡ Performance optimization: Processing ${performancesToProcess.length} new groups, skipping ${skippedPerformances.length} existing groups`);
+    
+    if (performancesToProcess.length === 0) {
+        logMessage('✅ All artists and performances already exist - skipping to genre processing');
+    }
+    
+    // Process only the performances that need processing
+    for (const group of performancesToProcess) {
         const artistIds = [];
         const artistNames = [];
         
         for (const perf of group) {
-            let soundCloudData = null;
+            let artistId = null;
             
-            // Search SoundCloud if we have an access token
-            if (accessToken && perf.name) {
-                try {
-                    const artistModule = await import('./artist.js');
-                    const searchArtist = artistModule.default.searchArtist;
-                    const extractArtistInfo = artistModule.default.extractArtistInfo;
-                    const scArtist = await searchArtist(perf.name, accessToken);
-                    if (scArtist) {
-                        soundCloudData = await extractArtistInfo(scArtist);
-                        soundCloudFoundCount++;
+            // Check if artist already exists using our pre-loaded map
+            const existingArtistId = existingArtistMap.get(perf.name.toLowerCase());
+            
+            if (existingArtistId) {
+                // Artist exists, use existing ID
+                artistId = existingArtistId;
+                logMessage(`⚡ Found existing artist: ${perf.name} (ID: ${artistId})`);
+            } else {
+                // Artist doesn't exist, do full processing with SoundCloud search
+                let soundCloudData = null;
+                
+                // Search SoundCloud if we have an access token
+                if (accessToken && perf.name) {
+                    try {
+                        const artistModule = await import('./artist.js');
+                        const searchArtist = artistModule.default.searchArtist;
+                        const extractArtistInfo = artistModule.default.extractArtistInfo;
+                        const scArtist = await searchArtist(perf.name, accessToken);
+                        if (scArtist) {
+                            soundCloudData = await extractArtistInfo(scArtist);
+                            soundCloudFoundCount++;
+                        }
+                    } catch (error) {
+                        console.error(`Error searching SoundCloud for ${perf.name}:`, error);
                     }
-                } catch (error) {
-                    console.error(`Error searching SoundCloud for ${perf.name}:`, error);
                 }
+                
+                // Insert or update artist
+                const artistData = { name: perf.name };
+                const result = await insertOrUpdateArtist(supabase, artistData, soundCloudData, dryRun);
+                artistId = result.id;
             }
             
-            // Insert or update artist
-            const artistData = { name: perf.name };
-            const result = await insertOrUpdateArtist(supabase, artistData, soundCloudData, dryRun);
-            
-            if (result.id) {
-                artistIds.push(result.id);
+            if (artistId) {
+                artistIds.push(artistId);
                 artistNames.push(perf.name);
-                artistNameToId[perf.name] = result.id;
+                artistNameToId[perf.name] = artistId;
             }
         }
         

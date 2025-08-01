@@ -27,7 +27,7 @@ import { logMessage } from './utils/logger.js';
 import { toUtcIso } from './utils/date.js';
 
 // Import model functions
-import { searchArtist, extractArtistInfo, insertOrUpdateArtist } from './models/artist.js';
+import artistModel from './models/artist.js';
 import { findEvent, updateEventMetadata, linkArtistsToEvent } from './models/event.js';
 import {
     groupPerformancesForB2B,
@@ -115,11 +115,11 @@ async function main() {
                 artistNames.push(artistName);
                 if (!artistNameToId[artistName]) {
                     logMessage(`🎵 SoundCloud search for: "${artistName}"`);
-                    const scArtist = await searchArtist(artistName, accessToken);
+                    const scArtist = await artistModel.searchArtist(artistName, accessToken);
                     let soundCloudData = null;
                     
                     if (scArtist) {
-                        const artistInfo = await extractArtistInfo(scArtist);
+                        const artistInfo = await artistModel.extractArtistInfo(scArtist);
                         logMessage(`✅ Best SoundCloud match for "${artistName}": ${artistInfo.name}`);
                         logMessage(`   └─ SoundCloud Profile: ${artistInfo.external_links.soundcloud.link}`);
                         
@@ -135,7 +135,7 @@ async function main() {
                         logMessage(`❌ No suitable SoundCloud match for "${artistName}"`);
                     }
                     
-                    const artist = await insertOrUpdateArtist(supabase, { name: artistName }, soundCloudData, DRY_RUN);
+                    const artist = await artistModel.insertOrUpdateArtist(supabase, { name: artistName }, soundCloudData, DRY_RUN);
                     artistNameToId[artistName] = artist.id;
                 }
                 artistIds.push(artistNameToId[artistName]);

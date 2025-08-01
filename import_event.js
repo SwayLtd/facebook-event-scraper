@@ -158,9 +158,27 @@ async function main() {
                     console.log(`✅ Found Clashfinder data for: ${clashfinderResult.festival.name} (similarity: ${clashfinderResult.similarity}%)`);
                     console.log(`🔗 Clashfinder URL: ${clashfinderResult.clashfinderUrl}`);
                     
-                    // Convert CSV to JSON format expected by timetable import
-                    timetableData = await convertClashfinderToJSON(clashfinderResult.csv);
-                    console.log(`📊 Converted CSV to JSON: ${timetableData.length} performances`);
+                    // Check if year matches
+                    const eventYear = eventData.name.match(/\b(20\d{2})\b/)?.[1];
+                    const timetableId = clashfinderResult.festival.id;
+                    let timetableYear = timetableId.match(/\b(20\d{2})\b/)?.[1];
+                    
+                    // Extract year from ID patterns like "lir23" -> "2023"
+                    if (!timetableYear && timetableId.match(/\w+(\d{2})$/)) {
+                        const shortYear = timetableId.match(/\w+(\d{2})$/)[1];
+                        timetableYear = shortYear.startsWith('0') || shortYear.startsWith('1') ? `20${shortYear}` : `20${shortYear}`;
+                        if (parseInt(shortYear) > 50) timetableYear = `19${shortYear}`; // Handle edge case
+                    }
+                    
+                    if (eventYear && timetableYear && eventYear !== timetableYear) {
+                        console.log(`❌ Rejecting timetable from ${timetableYear} for ${eventYear} event - year mismatch`);
+                        console.log(`🔄 Falling back to simple event import with OpenAI parsing`);
+                        importStrategy = 'simple_fallback';
+                    } else {
+                        // Convert CSV to JSON format expected by timetable import
+                        timetableData = await convertClashfinderToJSON(clashfinderResult.csv);
+                        console.log(`📊 Converted CSV to JSON: ${timetableData.length} performances`);
+                    }
                     
                 } catch (clashfinderError) {
                     console.log(`⚠️ Clashfinder lookup failed: ${clashfinderError.message}`);

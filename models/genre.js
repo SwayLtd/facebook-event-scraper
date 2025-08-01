@@ -128,11 +128,14 @@ async function verifyGenreWithLastFM(tagName, lastfmApiKey) {
         const lowerDesc = description.toLowerCase();
         const lowerTag = tagName.toLowerCase();
 
-        const hasGenreWord = /(genre|sub-genre|subgenre)/.test(lowerDesc);
+        // More flexible validation for electronic music genres
+        const hasGenreWord = /(genre|sub-genre|subgenre|style|type)/.test(lowerDesc);
         const hasMusicPhrase = new RegExp(`${lowerTag}\\s+music`).test(lowerDesc);
+        const isElectronicMusic = /electronic|dance|techno|house|trance|drum|bass/.test(lowerDesc);
         const isUmbrella = /umbrella term/.test(lowerDesc);
 
-        if (isUmbrella || !(hasGenreWord || hasMusicPhrase)) {
+        // Accept if it's an umbrella term OR has music-related keywords OR mentions electronic music
+        if (isUmbrella || !(hasGenreWord || hasMusicPhrase || isElectronicMusic)) {
             return { valid: false };
         }
 
@@ -270,7 +273,10 @@ async function processArtistGenres(supabase, artistData, lastfmApiKey, bannedGen
         console.log("[Genres] No SoundCloud token available");
         return genresFound;
     }
+
+    console.log(`[Genres] DEBUG: Fetching tracks for ${artistData.name} (SC ID: ${soundcloudUserId})...`);
     const tracks = await fetchArtistTracks(soundcloudUserId, token);
+    console.log(`[Genres] DEBUG: Found ${tracks.length} tracks for ${artistData.name}`);
 
     let allTags = [];
     for (const track of tracks) {
@@ -280,6 +286,7 @@ async function processArtistGenres(supabase, artistData, lastfmApiKey, bannedGen
         allTags = allTags.concat(splitted.filter(t => /[a-zA-Z]/.test(t)));
     }
     allTags = Array.from(new Set(allTags));
+    console.log(`[Genres] DEBUG: Extracted ${allTags.length} unique tags: ${allTags.slice(0, 5).join(', ')}${allTags.length > 5 ? '...' : ''}`);
 
     const aliasTagIds = {
         'dnb': 437, 'drumnbass': 437, "drum'n'bass": 437, 'drumandbass': 437,
@@ -302,6 +309,7 @@ async function processArtistGenres(supabase, artistData, lastfmApiKey, bannedGen
         if (v.valid && v.description) {
             const slug = slugifyGenre(v.name);
             if (!bannedGenres.includes(slug)) {
+                console.log(`[Genres] DEBUG: Valid genre found: "${v.name}"`);
                 genresFound.push({
                     name: v.name,
                     description: v.description,
@@ -315,6 +323,7 @@ async function processArtistGenres(supabase, artistData, lastfmApiKey, bannedGen
         }
     }
 
+    console.log(`[Genres] DEBUG: Final result for ${artistData.name}: ${genresFound.length} genres found`);
     return genresFound;
 }
 
