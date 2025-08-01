@@ -311,7 +311,7 @@ async function processFestivalTimetable(supabase, eventId, timetableData, clashf
     
     const { data: existingArtists, error: artistError } = await supabase
         .from('artists')
-        .select('id, name')
+        .select('id, name, external_links')
         .in('name', allArtistNames);
     
     if (artistError) {
@@ -319,12 +319,18 @@ async function processFestivalTimetable(supabase, eventId, timetableData, clashf
     }
     
     const existingArtistMap = new Map();
+    const artistsNeedingSoundCloud = new Map(); // Track artists that exist but need SoundCloud enrichment
     if (existingArtists) {
         existingArtists.forEach(artist => {
             existingArtistMap.set(artist.name.toLowerCase(), artist.id);
+            // Track artists that don't have external_links for SoundCloud enrichment
+            if (!artist.external_links) {
+                artistsNeedingSoundCloud.set(artist.name.toLowerCase(), artist.id);
+            }
         });
     }
     logMessage(`📊 Found ${existingArtistMap.size} existing artists out of ${allArtistNames.length} total`);
+    logMessage(`🎵 Found ${artistsNeedingSoundCloud.size} existing artists needing SoundCloud enrichment`);
     
     // Check existing event_artist links for this event with performance details
     const { data: existingEventArtists, error: linkError } = await supabase
@@ -419,12 +425,12 @@ async function processFestivalTimetable(supabase, eventId, timetableData, clashf
             // Check if artist already exists using our pre-loaded map
             const existingArtistId = existingArtistMap.get(perf.name.toLowerCase());
             
-            if (existingArtistId) {
-                // Artist exists, use existing ID
+            if (existingArtistId && !artistsNeedingSoundCloud.has(perf.name.toLowerCase())) {
+                // Artist exists and already has external_links, use existing ID
                 artistId = existingArtistId;
-                logMessage(`⚡ Found existing artist: ${perf.name} (ID: ${artistId})`);
+                logMessage(`⚡ Found existing artist with external_links: ${perf.name} (ID: ${artistId})`);
             } else {
-                // Artist doesn't exist, do full processing with SoundCloud search
+                // Artist doesn't exist OR exists but needs SoundCloud enrichment
                 let soundCloudData = null;
                 
                 // Search SoundCloud if we have an access token
@@ -443,13 +449,35 @@ async function processFestivalTimetable(supabase, eventId, timetableData, clashf
                     }
                 }
                 
-                // Insert or update artist
-                const artistData = { name: perf.name };
-                const result = await insertOrUpdateArtist(supabase, artistData, soundCloudData, dryRun);
-                artistId = result.id;
-                
-                // Track newly created artist for genre processing
-                newlyCreatedArtists[perf.name] = artistId;
+                if (existingArtistId) {
+                    // Artist exists but needs external_links enrichment
+                    if (soundCloudData && soundCloudData.external_links) {
+                        // Update existing artist with external_links
+                        const { error: updateError } = await supabase
+                            .from('artists')
+                            .update({ 
+                                external_links: soundCloudData.external_links,
+                                image_url: soundCloudData.image_url || undefined,
+                                description: soundCloudData.description || undefined
+                            })
+                            .eq('id', existingArtistId);
+                        
+                        if (updateError) {
+                            console.error(`Error updating artist ${perf.name} with SoundCloud data:`, updateError);
+                        } else {
+                            logMessage(`✅ Enriched existing artist: ${perf.name} (ID: ${existingArtistId}) with SoundCloud data`);
+                        }
+                    }
+                    artistId = existingArtistId;
+                } else {
+                    // Artist doesn't exist, create new one with SoundCloud data
+                    const artistData = { name: perf.name };
+                    const result = await insertOrUpdateArtist(supabase, artistData, soundCloudData, dryRun);
+                    artistId = result.id;
+                    
+                    // Track newly created artist for genre processing
+                    newlyCreatedArtists[perf.name] = artistId;
+                }
             }
             
             if (artistId) {
