@@ -92,6 +92,8 @@ let bannedGenreIds = [];
 
 // --- MAIN SCRIPT ---
 async function main() {
+    const startTime = Date.now(); // Track execution time
+    
     try {
         const eventUrl = process.argv[2];
         const skipArtists = process.argv.includes('--no-artists') || process.argv.includes('--skip-artists');
@@ -572,6 +574,20 @@ async function main() {
                 }
             }
         }
+
+        // Final success message
+        console.log('\n🎉 ============================================');
+        console.log('🎉 FACEBOOK EVENT IMPORT COMPLETED SUCCESSFULLY');
+        console.log('🎉 ============================================');
+        if (importStrategy === 'festival') {
+            console.log(`✅ Festival event "${eventName || 'Unknown'}" fully imported`);
+        } else {
+            console.log(`✅ Event "${eventName || 'Unknown'}" fully imported`);
+        }
+        console.log(`📊 Event ID: ${eventId}`);
+        console.log(`🎭 Import strategy: ${importStrategy}`);
+        console.log(`⏱️  Total execution time: ${((Date.now() - startTime) / 1000).toFixed(1)}s`);
+        console.log('🎉 ============================================\n');
 
     } catch (err) {
         console.error("❌ An error occurred:", err.message || err);

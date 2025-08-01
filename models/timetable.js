@@ -296,6 +296,7 @@ async function processFestivalTimetable(supabase, eventId, timetableData, clashf
     let successCount = 0;
     let soundCloudFoundCount = 0;
     const artistNameToId = {};
+    const newlyCreatedArtists = {}; // Track only newly created artists for genre processing
     
     // Import artist model
     const artistModule = await import('./artist.js');
@@ -389,7 +390,7 @@ async function processFestivalTimetable(supabase, eventId, timetableData, clashf
         
         if (allArtistsExist && allLinksExist) {
             skippedPerformances.push(group);
-            // Still add to artistNameToId for genre processing
+            // Add existing artists to global map but NOT to newly created map (no genre processing needed)
             group.forEach(perf => {
                 const artistId = existingArtistMap.get(perf.name.toLowerCase());
                 if (artistId) {
@@ -446,6 +447,9 @@ async function processFestivalTimetable(supabase, eventId, timetableData, clashf
                 const artistData = { name: perf.name };
                 const result = await insertOrUpdateArtist(supabase, artistData, soundCloudData, dryRun);
                 artistId = result.id;
+                
+                // Track newly created artist for genre processing
+                newlyCreatedArtists[perf.name] = artistId;
             }
             
             if (artistId) {
@@ -471,10 +475,12 @@ async function processFestivalTimetable(supabase, eventId, timetableData, clashf
     logMessage(`Festival timetable import complete: ${processedCount} artists processed, ${successCount} imported, ${soundCloudFoundCount} with SoundCloud`);
     console.log(`✅ Festival import complete: ${processedCount} artists, ${soundCloudFoundCount} found on SoundCloud`);
     
-    // Process genres for all imported artists in batch mode
-    if (!dryRun && Object.keys(artistNameToId).length > 0) {
-        console.log(`\n🎵 Processing genres for ${Object.keys(artistNameToId).length} festival artists...`);
-        await processFestivalArtistGenres(supabase, artistNameToId, options);
+    // Process genres for newly created artists only (skip existing artists to avoid conflicts)
+    if (!dryRun && Object.keys(newlyCreatedArtists).length > 0) {
+        console.log(`\n🎵 Processing genres for ${Object.keys(newlyCreatedArtists).length} newly created festival artists...`);
+        await processFestivalArtistGenres(supabase, newlyCreatedArtists, options);
+    } else if (!dryRun && Object.keys(newlyCreatedArtists).length === 0) {
+        console.log(`\n🎵 No new artists created - skipping genre processing (all artists already existed)`);
     }
     
     // Auto-detect and update event end time if not already set
