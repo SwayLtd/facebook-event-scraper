@@ -405,7 +405,7 @@ async function main() {
         console.log(`\n📝 Checking if event "${eventName}" already exists in the database...`);
         let eventId = null;
         if (!DRY_RUN) {
-            // Search by URL
+            // Search by URL first (primary key for uniqueness)
             const { data: eventsByUrl, error: eventsByUrlError } = await supabase
                 .from('events')
                 .select('id, metadata')
@@ -416,16 +416,21 @@ async function main() {
                 eventId = eventsByUrl[0].id;
                 console.log(`➡️ Event found by facebook_url (id=${eventId}).`);
             } else {
-                // Search by title
-                const { data: eventsByName, error: eventsByNameError } = await supabase
-                    .from('events')
-                    .select('id')
-                    .eq('title', eventName);
-                if (eventsByNameError) throw eventsByNameError;
+                // Search by title only if no Facebook URL provided (rare case)
+                // This ensures that events with different Facebook URLs are always treated as separate events
+                if (!fbEventUrl) {
+                    const { data: eventsByName, error: eventsByNameError } = await supabase
+                        .from('events')
+                        .select('id')
+                        .eq('title', eventName);
+                    if (eventsByNameError) throw eventsByNameError;
 
-                if (eventsByName && eventsByName.length > 0) {
-                    eventId = eventsByName[0].id;
-                    console.log(`➡️ Event found by title matching (id=${eventId}).`);
+                    if (eventsByName && eventsByName.length > 0) {
+                        eventId = eventsByName[0].id;
+                        console.log(`➡️ Event found by title matching (id=${eventId}) - no Facebook URL provided.`);
+                    }
+                } else {
+                    console.log(`➡️ Event with different Facebook URL - will create new event even if same name exists.`);
                 }
             }
 
