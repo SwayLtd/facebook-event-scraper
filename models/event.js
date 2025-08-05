@@ -2,6 +2,7 @@
 // Event-related utility functions
 
 import { logMessage } from '../utils/logger.js';
+import { validateTimestamp } from '../utils/date.js';
 
 /**
  * Finds an event in Supabase by Facebook URL, then by title if not found.
@@ -102,15 +103,15 @@ export async function linkArtistsToEvent(supabase, eventId, artistIds, performan
         
         const artistIdStrs = artistIds.map(String);
         
-        // Use ISO 8601 date-times directly from JSON (already formatted)
+        // Validate and clean timestamps using utility function
         let startTime = null;
         let endTime = null;
         
         if (performanceData.time && performanceData.time.trim() !== "") {
-            startTime = performanceData.time;
+            startTime = validateTimestamp(performanceData.time, 'start_time');
         }
         if (performanceData.end_time && performanceData.end_time.trim() !== "") {
-            endTime = performanceData.end_time;
+            endTime = validateTimestamp(performanceData.end_time, 'end_time');
         }
         
         // Check if link already exists with the same details
