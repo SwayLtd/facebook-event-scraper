@@ -465,57 +465,110 @@ async function main() {
             throw new Error('Failed to obtain SoundCloud access token');
         }
         
-        // Build query for artists with SoundCloud links
-        let query = supabase
-            .from('artists')
-            .select('id, name, description, external_links')
-            .not('external_links', 'is', null);
-            
-        if (options.artistId) {
-            query = query.eq('id', options.artistId);
-            logMessage(`Targeting specific artist ID: ${options.artistId}`);
-        }
+        // Handle unlimited processing with pagination (Supabase limit is 1000 per query)
+        let allSoundCloudArtists = [];
         
-        // Apply batch size limit only if specified
-        if (options.batchSize) {
-            query = query.limit(options.batchSize);
+        if (options.artistId) {
+            // Single artist query
+            const { data: artists, error } = await supabase
+                .from('artists')
+                .select('id, name, description, external_links')
+                .eq('id', options.artistId)
+                .not('external_links', 'is', null);
+                
+            if (error) {
+                throw new Error(`Database error: ${error.message}`);
+            }
+            
+            if (artists && artists.length > 0) {
+                const soundCloudArtists = artists.filter(artist => 
+                    artist.external_links && artist.external_links.soundcloud
+                );
+                allSoundCloudArtists = soundCloudArtists;
+            }
+            logMessage(`Targeting specific artist ID: ${options.artistId}`);
+        } else if (options.batchSize) {
+            // Limited batch processing
+            const { data: artists, error } = await supabase
+                .from('artists')
+                .select('id, name, description, external_links')
+                .not('external_links', 'is', null)
+                .limit(options.batchSize);
+                
+            if (error) {
+                throw new Error(`Database error: ${error.message}`);
+            }
+            
+            if (artists && artists.length > 0) {
+                const soundCloudArtists = artists.filter(artist => 
+                    artist.external_links && artist.external_links.soundcloud
+                );
+                allSoundCloudArtists = soundCloudArtists;
+            }
             logMessage(`Batch size limited to: ${options.batchSize}`);
         } else {
-            logMessage(`Processing ALL artists (unlimited batch size)`);
+            // Unlimited processing with pagination to bypass Supabase 1000-row limit
+            logMessage(`Processing ALL artists (unlimited batch size with automatic pagination)`);
+            
+            let offset = 0;
+            const pageSize = 1000; // Max Supabase page size
+            let hasMoreData = true;
+            let totalFetched = 0;
+            
+            while (hasMoreData) {
+                logMessage(`Fetching batch ${Math.floor(offset / pageSize) + 1} (rows ${offset + 1}-${offset + pageSize})...`);
+                
+                const { data: artists, error } = await supabase
+                    .from('artists')
+                    .select('id, name, description, external_links')
+                    .not('external_links', 'is', null)
+                    .range(offset, offset + pageSize - 1);
+                    
+                if (error) {
+                    throw new Error(`Database error: ${error.message}`);
+                }
+                
+                if (!artists || artists.length === 0) {
+                    hasMoreData = false;
+                    break;
+                }
+                
+                totalFetched += artists.length;
+                
+                // Filter for SoundCloud artists
+                const soundCloudArtists = artists.filter(artist => 
+                    artist.external_links && artist.external_links.soundcloud
+                );
+                
+                allSoundCloudArtists.push(...soundCloudArtists);
+                logMessage(`Found ${soundCloudArtists.length} SoundCloud artists in this batch (${allSoundCloudArtists.length} total so far)`);
+                
+                // If we got less than pageSize, we've reached the end
+                if (artists.length < pageSize) {
+                    hasMoreData = false;
+                } else {
+                    offset += pageSize;
+                }
+            }
+            
+            logMessage(`Pagination complete. Fetched ${totalFetched} total artists from database`);
         }
         
-        // Execute query
-        const { data: artists, error } = await query;
-        
-        if (error) {
-            throw new Error(`Database error: ${error.message}`);
-        }
-        
-        if (!artists || artists.length === 0) {
-            logMessage('No artists found with external_links data');
-            return;
-        }
-        
-        // Filter for artists with SoundCloud links
-        const soundCloudArtists = artists.filter(artist => 
-            artist.external_links && artist.external_links.soundcloud
-        );
-        
-        if (soundCloudArtists.length === 0) {
+        if (allSoundCloudArtists.length === 0) {
             logMessage('No artists found with SoundCloud links');
             return;
         }
         
-        logMessage(`Found ${soundCloudArtists.length} artist(s) with SoundCloud links to process`);
+        logMessage(`Found ${allSoundCloudArtists.length} artist(s) with SoundCloud links to process`);
         
         // Process each artist
         let successCount = 0;
         let errorCount = 0;
         
-        for (let i = 0; i < soundCloudArtists.length; i++) {
-            const artist = soundCloudArtists[i];
+        for (let i = 0; i < allSoundCloudArtists.length; i++) {
+            const artist = allSoundCloudArtists[i];
             
-            logMessage(`\n--- Processing ${i + 1}/${soundCloudArtists.length} ---`);
+            logMessage(`\n--- Processing ${i + 1}/${allSoundCloudArtists.length} ---`);
             
             try {
                 const success = await enrichArtist(artist, accessToken);
@@ -530,17 +583,17 @@ async function main() {
             }
             
             // Rate limiting between artists
-            if (i < soundCloudArtists.length - 1) {
+            if (i < allSoundCloudArtists.length - 1) {
                 await delay(1500);
             }
         }
         
         // Final summary
         logMessage(`\n=== Enrichment Summary ===`);
-        logMessage(`Total processed: ${soundCloudArtists.length}`);
+        logMessage(`Total processed: ${allSoundCloudArtists.length}`);
         logMessage(`Successful: ${successCount}`);
         logMessage(`Errors: ${errorCount}`);
-        logMessage(`Success rate: ${((successCount / soundCloudArtists.length) * 100).toFixed(1)}%`);
+        logMessage(`Success rate: ${((successCount / allSoundCloudArtists.length) * 100).toFixed(1)}%`);
         
         if (options.dryRun) {
             logMessage('\n⚠️  DRY_RUN mode - no data was actually updated in the database');
