@@ -119,24 +119,23 @@ function categorizeEmail(email, context = '') {
  */
 async function fetchSoundCloudWebProfiles(soundCloudId, accessToken) {
     try {
-        // Try both authentication methods
-        const urls = [
-            `https://api.soundcloud.com/users/${soundCloudId}/web-profiles?client_id=${SOUND_CLOUD_CLIENT_ID}`,
-            `https://api.soundcloud.com/users/${soundCloudId}/web-profiles?client_id=${SOUND_CLOUD_CLIENT_ID}&oauth_token=${accessToken}`
-        ];
-        
-        for (const url of urls) {
-            const response = await fetch(url);
-            
-            if (response.ok) {
-                const data = await response.json();
-                logMessage(`   ✅ SoundCloud web-profiles fetch successful via ${url.includes('oauth_token') ? 'OAuth' : 'client_id'}`);
-                return data.collection || data || [];
+        // Use OAuth Bearer token authentication (required since SoundCloud security updates)
+        const response = await fetch(`https://api.soundcloud.com/users/${soundCloudId}/web-profiles`, {
+            headers: {
+                'Authorization': `Bearer ${accessToken}`
             }
-        }
+        });
         
-        logMessage(`⚠️ SoundCloud web-profiles not accessible for user ${soundCloudId} (both auth methods failed)`);
-        return [];
+        if (response.ok) {
+            const data = await response.json();
+            logMessage(`   ✅ SoundCloud web-profiles fetch successful (${data.length} profiles found)`);
+            return data || [];
+        } else {
+            const errorText = await response.text();
+            logMessage(`⚠️ SoundCloud web-profiles not accessible for user ${soundCloudId}: ${response.status} ${response.statusText}`);
+            logMessage(`   Error details: ${errorText}`);
+            return [];
+        }
     } catch (error) {
         logMessage(`❌ Error fetching SoundCloud web profiles for ${soundCloudId}: ${error.message}`);
         return [];
