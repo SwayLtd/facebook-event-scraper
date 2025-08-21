@@ -80,6 +80,10 @@ async function main() {
         const jsonData = JSON.parse(fs.readFileSync(jsonFilePath, 'utf8'));
         logMessage(`Loaded ${jsonData.length} artist performances from JSON`);
         const accessToken = await getAccessToken(SOUND_CLOUD_CLIENT_ID, SOUND_CLOUD_CLIENT_SECRET);
+        
+        // Initialize global token for automatic refresh on 401 errors
+        artistModel.initializeGlobalToken(accessToken);
+        
         logMessage("Searching for the event in the database (robust search)...");
         const event = await findEvent(supabase, { facebookUrl: eventUrl });
         if (!event) {

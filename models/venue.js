@@ -1,4 +1,5 @@
 import fetch from 'node-fetch';
+import { withApiRetry } from '../utils/retry.js';
 
 /**
  * Retrieves the URL of a Google Places photo for a given address.
@@ -8,28 +9,34 @@ import fetch from 'node-fetch';
  */
 async function fetchGoogleVenuePhoto(name, address) {
     // Google Maps geocoding
-    const geoRes = await fetch(
-        `https://maps.googleapis.com/maps/api/geocode/json?address=${encodeURIComponent(address)}&key=${process.env.GOOGLE_API_KEY}`
-    );
+    const geoRes = await withApiRetry(async () => {
+        return await fetch(
+            `https://maps.googleapis.com/maps/api/geocode/json?address=${encodeURIComponent(address)}&key=${process.env.GOOGLE_API_KEY}`
+        );
+    });
     const geoJson = await geoRes.json();
     if (!geoJson.results?.length) throw new Error('No geocoding results');
     // lat, lng are not used elsewhere
 
     // findPlaceFromText to get place_id
-    const findRes = await fetch(
-        `https://maps.googleapis.com/maps/api/place/findplacefromtext/json` +
-        `?input=${encodeURIComponent(name + ' ' + address)}` +
-        `&inputtype=textquery&fields=place_id&key=${process.env.GOOGLE_API_KEY}`
-    );
+    const findRes = await withApiRetry(async () => {
+        return await fetch(
+            `https://maps.googleapis.com/maps/api/place/findplacefromtext/json` +
+            `?input=${encodeURIComponent(name + ' ' + address)}` +
+            `&inputtype=textquery&fields=place_id&key=${process.env.GOOGLE_API_KEY}`
+        );
+    });
     const findJson = await findRes.json();
     if (!findJson.candidates?.length) throw new Error('No place_id found');
     const placeId = findJson.candidates[0].place_id;
 
     // details to get photo_reference
-    const detailRes = await fetch(
-        `https://maps.googleapis.com/maps/api/place/details/json` +
-        `?place_id=${placeId}&fields=photos&key=${process.env.GOOGLE_API_KEY}`
-    );
+    const detailRes = await withApiRetry(async () => {
+        return await fetch(
+            `https://maps.googleapis.com/maps/api/place/details/json` +
+            `?place_id=${placeId}&fields=photos&key=${process.env.GOOGLE_API_KEY}`
+        );
+    });
     const detailJson = await detailRes.json();
     const photoRef = detailJson.result.photos?.[0]?.photo_reference;
     if (!photoRef) throw new Error('No photo available');
@@ -48,7 +55,9 @@ async function fetchAddressFromGoogle(venueName, googleApiKey, geocodingExceptio
     try {
         // Correct name via geocodingExceptions if present
         const correctedName = geocodingExceptions[venueName] || venueName;
-        const response = await fetch(`https://maps.googleapis.com/maps/api/geocode/json?address=${encodeURIComponent(correctedName)}&key=${googleApiKey}`);
+        const response = await withApiRetry(async () => {
+            return await fetch(`https://maps.googleapis.com/maps/api/geocode/json?address=${encodeURIComponent(correctedName)}&key=${googleApiKey}`);
+        });
         const data = await response.json();
         if (data.status === "OK" && data.results && data.results.length > 0) {
             return data.results[0];

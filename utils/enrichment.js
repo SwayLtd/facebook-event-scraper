@@ -7,6 +7,7 @@
 
 import { delay } from './delay.js';
 import { logMessage } from './logger.js';
+import { withApiRetry } from './retry.js';
 
 // --- Supported platforms ---
 const SUPPORTED_PLATFORMS = {
@@ -84,8 +85,10 @@ async function searchMusicBrainzBySoundCloud(soundCloudUrl) {
         const encodedUrl = encodeURIComponent(soundCloudUrl);
         const searchUrl = `https://musicbrainz.org/ws/2/url?query=url:"${encodedUrl}"&fmt=json&inc=artist-rels`;
         
-        const response = await fetch(searchUrl, {
-            headers: { 'User-Agent': 'SwayApp/1.0 (contact@sway-app.com)' }
+        const response = await withApiRetry(async () => {
+            return await fetch(searchUrl, {
+                headers: { 'User-Agent': 'SwayApp/1.0 (contact@sway-app.com)' }
+            });
         });
         
         if (!response.ok) return null;
@@ -118,8 +121,10 @@ async function searchMusicBrainzByName(artistName) {
         const encodedName = encodeURIComponent(artistName);
         const searchUrl = `https://musicbrainz.org/ws/2/artist?query=artist:"${encodedName}"&fmt=json&limit=1`;
         
-        const response = await fetch(searchUrl, {
-            headers: { 'User-Agent': 'SwayApp/1.0 (contact@sway-app.com)' }
+        const response = await withApiRetry(async () => {
+            return await fetch(searchUrl, {
+                headers: { 'User-Agent': 'SwayApp/1.0 (contact@sway-app.com)' }
+            });
         });
         
         if (!response.ok) return null;
@@ -143,8 +148,10 @@ async function fetchMusicBrainzLinks(artistId) {
     try {
         const url = `https://musicbrainz.org/ws/2/artist/${artistId}?inc=url-rels&fmt=json`;
         
-        const response = await fetch(url, {
-            headers: { 'User-Agent': 'SwayApp/1.0 (contact@sway-app.com)' }
+        const response = await withApiRetry(async () => {
+            return await fetch(url, {
+                headers: { 'User-Agent': 'SwayApp/1.0 (contact@sway-app.com)' }
+            });
         });
         
         if (!response.ok) return [];

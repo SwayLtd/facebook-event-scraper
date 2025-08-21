@@ -2,6 +2,7 @@
 // Utility functions for geocoding and distance
 
 import fetch from 'node-fetch';
+import { withApiRetry } from './retry.js';
 
 /**
  * Calculates the distance between two GPS coordinates.
@@ -32,7 +33,9 @@ function haversineDistance(lat1, lon1, lat2, lon2) {
  */
 async function fetchAddressFromNominatim(lat, lon) {
     try {
-        const response = await fetch(`https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lon}`);
+        const response = await withApiRetry(async () => {
+            return await fetch(`https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lon}`);
+        });
         const data = await response.json();
         if (data && data.display_name) {
             return data;

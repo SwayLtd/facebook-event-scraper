@@ -5,9 +5,13 @@ import { normalizeNameEnhanced } from '../utils/name.js';
 import { normalizeExternalLinks } from '../utils/social.js';
 import { getAccessToken } from '../utils/token.js';
 import { enrichArtistData } from '../utils/enrichment.js';
+import { withApiRetry } from '../utils/retry.js';
 import genreModel from './genre.js';
 import fetch from 'node-fetch';
 import stringSimilarity from 'string-similarity';
+
+// Global access token management for automatic refresh
+let GLOBAL_ACCESS_TOKEN = null;
 
 // --- Auto-enrichment always enabled ---
 // Artists are automatically enriched with social media links, music platforms, and contact emails
@@ -30,10 +34,21 @@ async function getBestImageUrl(avatarUrl) {
  */
 async function searchArtist(artistName, accessToken) {
     try {
+        // Use global token if provided, otherwise use the passed token
+        const currentToken = accessToken || GLOBAL_ACCESS_TOKEN;
+        
         const normName = normalizeNameEnhanced(artistName);
         const url = `https://api.soundcloud.com/users?q=${encodeURIComponent(normName)}&limit=10`;
-        const response = await fetch(url, {
-            headers: { "Authorization": `OAuth ${accessToken}` }
+        const response = await withApiRetry(async () => {
+            return await fetch(url, {
+                headers: { "Authorization": `OAuth ${currentToken}` }
+            });
+        }, {
+            onAuthFailure: async () => {
+                console.log('🔑 SoundCloud token expired, refreshing automatically...');
+                GLOBAL_ACCESS_TOKEN = await getAccessToken();
+                console.log('✅ SoundCloud token refreshed successfully');
+            }
         });
         const data = await response.json();
         if (!data || data.length === 0) {
@@ -486,6 +501,14 @@ async function processSimpleEventArtists(supabase, openai, eventId, eventDescrip
     return processedArtistIds;
 }
 
+/**
+ * Initialize global access token for automatic refresh
+ * @param {string} token - SoundCloud access token 
+ */
+function initializeGlobalToken(token) {
+    GLOBAL_ACCESS_TOKEN = token;
+}
+
 export default {
     getBestImageUrl,
     findOrInsertArtist,
@@ -493,4 +516,5 @@ export default {
     searchArtist,
     extractArtistInfo,
     processSimpleEventArtists,
+    initializeGlobalToken,
 };
