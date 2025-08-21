@@ -31,6 +31,9 @@ const SOUND_CLOUD_CLIENT_ID = process.env.SOUND_CLOUD_CLIENT_ID;
 const SOUND_CLOUD_CLIENT_SECRET = process.env.SOUND_CLOUD_CLIENT_SECRET;
 const PROGRESS_FILE = 'enrichment_progress.json';
 
+// Global token management
+let GLOBAL_ACCESS_TOKEN = null;
+
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
@@ -172,19 +175,30 @@ function categorizeEmail(email, context = '') {
 /**
  * Fetch SoundCloud user's web profiles (social media links)
  */
-async function fetchSoundCloudWebProfiles(soundCloudId, accessToken) {
+async function fetchSoundCloudWebProfiles(soundCloudId) {
     try {
         const response = await withApiRetry(async () => {
             // Use OAuth Bearer token authentication (required since SoundCloud security updates)
             return await fetch(`https://api.soundcloud.com/users/${soundCloudId}/web-profiles`, {
                 headers: {
-                    'Authorization': `Bearer ${accessToken}`
+                    'Authorization': `Bearer ${GLOBAL_ACCESS_TOKEN}`
                 }
             });
         }, {
             maxRetries: 3,
             initialDelay: 2000, // Start with 2s delay for SoundCloud
-            maxDelay: 30000
+            maxDelay: 30000,
+            onAuthFailure: async () => {
+                // Refresh the SoundCloud token on 401 errors
+                logMessage('🔄 SoundCloud token expired, refreshing...');
+                const newToken = await getAccessToken(SOUND_CLOUD_CLIENT_ID, SOUND_CLOUD_CLIENT_SECRET);
+                if (newToken) {
+                    GLOBAL_ACCESS_TOKEN = newToken;
+                    logMessage('✅ SoundCloud token refreshed successfully');
+                } else {
+                    throw new Error('Failed to refresh SoundCloud token');
+                }
+            }
         });
         
         if (response.ok) {
@@ -428,7 +442,7 @@ function mergeExternalLinks(existingLinks, newLinks, emails) {
 /**
  * Enrich a single artist with external links and emails
  */
-async function enrichArtist(artist, accessToken) {
+async function enrichArtist(artist) {
     logMessage(`🎵 Processing artist: "${artist.name}" (ID: ${artist.id})`);
     
     const allLinks = [];
@@ -439,7 +453,7 @@ async function enrichArtist(artist, accessToken) {
         const soundCloudId = artist.external_links.soundcloud.id;
         if (soundCloudId) {
             logMessage(`   🔍 Fetching SoundCloud web profiles for ID: ${soundCloudId}`);
-            const webProfiles = await fetchSoundCloudWebProfiles(soundCloudId, accessToken);
+            const webProfiles = await fetchSoundCloudWebProfiles(soundCloudId);
             const scLinks = processSoundCloudWebProfiles(webProfiles);
             allLinks.push(...scLinks);
             logMessage(`   📱 Found ${scLinks.length} social media links from SoundCloud`);
@@ -537,11 +551,13 @@ async function main() {
     logMessage(`Batch size: ${options.batchSize ? options.batchSize : 'UNLIMITED (all artists)'}`);
     
     try {
-        // Get SoundCloud access token
-        const accessToken = await getAccessToken(SOUND_CLOUD_CLIENT_ID, SOUND_CLOUD_CLIENT_SECRET);
-        if (!accessToken) {
+        // Get SoundCloud access token and store it globally
+        GLOBAL_ACCESS_TOKEN = await getAccessToken(SOUND_CLOUD_CLIENT_ID, SOUND_CLOUD_CLIENT_SECRET);
+        if (!GLOBAL_ACCESS_TOKEN) {
             throw new Error('Failed to obtain SoundCloud access token');
         }
+        
+        logMessage(`✅ SoundCloud access token obtained and ready for use`);
         
         // Handle unlimited processing with pagination (Supabase limit is 1000 per query)
         let allSoundCloudArtists = [];
@@ -674,7 +690,7 @@ async function main() {
             logMessage(`\n--- Processing ${i + 1}/${allSoundCloudArtists.length} ---`);
             
             try {
-                const success = await enrichArtist(artist, accessToken);
+                const success = await enrichArtist(artist);
                 if (success) {
                     successCount++;
                 } else {

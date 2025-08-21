@@ -52,3 +52,4 @@ outputs/*
 *.csv
 *.xlsx
 *.bak
+enrichment_progress.json

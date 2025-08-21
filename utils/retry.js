@@ -92,14 +92,24 @@ function defaultShouldRetry(error) {
 }
 
 /**
- * Retry wrapper specifically for API calls with response status handling
+ * Retry wrapper specifically for API calls with response status handling and token refresh
  * @param {Function} apiFn - Function that returns a fetch Response
- * @param {Object} options - Retry options (same as withRetry)
+ * @param {Object} options - Retry options
+ * @param {Function} options.onAuthFailure - Function to call when 401 occurs (should refresh tokens)
  * @returns {Promise} API response or throws error
  */
 export async function withApiRetry(apiFn, options = {}) {
+    const { onAuthFailure, ...retryOptions } = options;
+    
     return await withRetry(async () => {
         const response = await apiFn();
+        
+        // Handle authentication failures (401)
+        if (response.status === 401 && onAuthFailure) {
+            console.log('🔑 Authentication failed (401), attempting token refresh...');
+            await onAuthFailure();
+            throw new Error(`Authentication failed (401): ${response.statusText} - Token refreshed, retrying`);
+        }
         
         // Handle rate limiting specifically
         if (response.status === 429) {
@@ -120,13 +130,14 @@ export async function withApiRetry(apiFn, options = {}) {
         
         return response;
     }, {
-        ...options,
+        ...retryOptions,
         shouldRetry: (error, attempt) => {
-            // Custom retry logic for API calls
             const message = error.message.toLowerCase();
             
-            // Always retry rate limiting and server errors
-            if (message.includes('rate limited') || message.includes('server error')) {
+            // Always retry auth failures (with token refresh), rate limiting and server errors
+            if (message.includes('authentication failed') || 
+                message.includes('rate limited') || 
+                message.includes('server error')) {
                 return true;
             }
             
