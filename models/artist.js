@@ -4,9 +4,13 @@
 import { normalizeNameEnhanced } from '../utils/name.js';
 import { normalizeExternalLinks } from '../utils/social.js';
 import { getAccessToken } from '../utils/token.js';
+import { enrichArtistData } from '../utils/enrichment.js';
 import genreModel from './genre.js';
 import fetch from 'node-fetch';
 import stringSimilarity from 'string-similarity';
+
+// --- Auto-enrichment always enabled ---
+// Artists are automatically enriched with social media links, music platforms, and contact emails
 
 async function getBestImageUrl(avatarUrl) {
     if (!avatarUrl) return null;
@@ -74,7 +78,7 @@ async function searchArtist(artistName, accessToken) {
  */
 async function extractArtistInfo(artist) {
     const bestImageUrl = await getBestImageUrl(artist.avatar_url);
-    return {
+    let artistData = {
         name: artist.username,
         image_url: bestImageUrl,
         description: artist.description,
@@ -89,6 +93,16 @@ async function extractArtistInfo(artist) {
             }
         }
     };
+    
+    // Auto-enrichment with MusicBrainz and email extraction (always enabled)
+    try {
+        artistData = await enrichArtistData(artistData);
+    } catch (error) {
+        console.log(`   ⚠️ Auto-enrichment failed for "${artistData.name}": ${error.message}`);
+        // Continue with original data if enrichment fails
+    }
+    
+    return artistData;
 }
 
 /**
@@ -248,12 +262,28 @@ async function insertOrUpdateArtist(supabase, artistData, soundCloudData = null,
         }
         
         // Build the enriched artist object
-        const artistRecord = {
+        let artistRecord = {
             name: normName,
             image_url: soundCloudData ? soundCloudData.image_url : undefined,
             description: soundCloudData ? soundCloudData.description : undefined,
             external_links: Object.keys(external_links).length > 0 ? external_links : undefined
         };
+        
+        // Auto-enrichment for new artists or artists without much data (always enabled)
+        if (!dryRun) {
+            const shouldEnrich = !existingArtist || 
+                                !existingArtist.external_links || 
+                                Object.keys(existingArtist.external_links).length <= 1;
+                                
+            if (shouldEnrich) {
+                try {
+                    artistRecord = await enrichArtistData(artistRecord);
+                } catch (error) {
+                    console.log(`   ⚠️ Auto-enrichment failed for "${artistRecord.name}": ${error.message}`);
+                    // Continue with original data if enrichment fails
+                }
+            }
+        }
         
         if (existingArtist) {
             // Update
