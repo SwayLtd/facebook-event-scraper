@@ -435,7 +435,7 @@ function parseArgs() {
     const options = {
         dryRun: DRY_RUN,
         artistId: null,
-        batchSize: 50
+        batchSize: null // Unlimited by default - process ALL artists
     };
     
     for (const arg of args) {
@@ -456,7 +456,7 @@ async function main() {
     const options = parseArgs();
     
     logMessage(`=== Starting Artist Data Enrichment${options.dryRun ? ' (DRY_RUN MODE)' : ''} ===`);
-    logMessage(`Batch size: ${options.batchSize}`);
+    logMessage(`Batch size: ${options.batchSize ? options.batchSize : 'UNLIMITED (all artists)'}`);
     
     try {
         // Get SoundCloud access token
@@ -476,8 +476,16 @@ async function main() {
             logMessage(`Targeting specific artist ID: ${options.artistId}`);
         }
         
-        // Execute query with batch size limit
-        const { data: artists, error } = await query.limit(options.batchSize);
+        // Apply batch size limit only if specified
+        if (options.batchSize) {
+            query = query.limit(options.batchSize);
+            logMessage(`Batch size limited to: ${options.batchSize}`);
+        } else {
+            logMessage(`Processing ALL artists (unlimited batch size)`);
+        }
+        
+        // Execute query
+        const { data: artists, error } = await query;
         
         if (error) {
             throw new Error(`Database error: ${error.message}`);
