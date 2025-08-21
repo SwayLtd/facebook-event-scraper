@@ -22,11 +22,14 @@ import { createClient } from '@supabase/supabase-js';
 import { delay } from './utils/delay.js';
 import { getAccessToken } from './utils/token.js';
 import { logMessage } from './utils/logger.js';
+import { withApiRetry } from './utils/retry.js';
+import { existsSync, readFileSync, writeFileSync } from 'fs';
 
 // --- Configuration ---
 const DRY_RUN = process.env.DRY_RUN === 'true' || process.argv.includes('--dry-run');
 const SOUND_CLOUD_CLIENT_ID = process.env.SOUND_CLOUD_CLIENT_ID;
 const SOUND_CLOUD_CLIENT_SECRET = process.env.SOUND_CLOUD_CLIENT_SECRET;
+const PROGRESS_FILE = 'enrichment_progress.json';
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -65,6 +68,58 @@ const SUPPORTED_PLATFORMS = {
 
 // Email types for reference (used in email categorization logic)
 // const EMAIL_TYPES = ['contact', 'booking', 'press', 'management', 'ar', 'radio', 'distribution', 'touring', 'label', 'publisher', 'info', 'general'];
+
+// --- Progress Management ---
+
+/**
+ * Save progress to resume later if interrupted
+ */
+function saveProgress(processedIds, totalCount, successCount, errorCount) {
+    try {
+        const progress = {
+            processedIds,
+            totalCount,
+            successCount,
+            errorCount,
+            lastSaved: new Date().toISOString()
+        };
+        writeFileSync(PROGRESS_FILE, JSON.stringify(progress, null, 2));
+        logMessage(`💾 Progress saved: ${processedIds.length}/${totalCount} processed`);
+    } catch (error) {
+        logMessage(`⚠️ Warning: Could not save progress: ${error.message}`);
+    }
+}
+
+/**
+ * Load previous progress if available
+ */
+function loadProgress() {
+    try {
+        if (existsSync(PROGRESS_FILE)) {
+            const progress = JSON.parse(readFileSync(PROGRESS_FILE, 'utf8'));
+            logMessage(`📂 Found previous progress: ${progress.processedIds.length}/${progress.totalCount} processed`);
+            logMessage(`   Last saved: ${progress.lastSaved}`);
+            return progress;
+        }
+    } catch (error) {
+        logMessage(`⚠️ Warning: Could not load progress: ${error.message}`);
+    }
+    return null;
+}
+
+/**
+ * Clear progress file after successful completion
+ */
+function clearProgress() {
+    try {
+        if (existsSync(PROGRESS_FILE)) {
+            writeFileSync(PROGRESS_FILE, '{}');
+            logMessage(`🗑️ Progress file cleared`);
+        }
+    } catch (error) {
+        logMessage(`⚠️ Warning: Could not clear progress: ${error.message}`);
+    }
+}
 
 // --- Email extraction patterns ---
 const EMAIL_REGEX = /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b/g;
@@ -119,11 +174,17 @@ function categorizeEmail(email, context = '') {
  */
 async function fetchSoundCloudWebProfiles(soundCloudId, accessToken) {
     try {
-        // Use OAuth Bearer token authentication (required since SoundCloud security updates)
-        const response = await fetch(`https://api.soundcloud.com/users/${soundCloudId}/web-profiles`, {
-            headers: {
-                'Authorization': `Bearer ${accessToken}`
-            }
+        const response = await withApiRetry(async () => {
+            // Use OAuth Bearer token authentication (required since SoundCloud security updates)
+            return await fetch(`https://api.soundcloud.com/users/${soundCloudId}/web-profiles`, {
+                headers: {
+                    'Authorization': `Bearer ${accessToken}`
+                }
+            });
+        }, {
+            maxRetries: 3,
+            initialDelay: 2000, // Start with 2s delay for SoundCloud
+            maxDelay: 30000
         });
         
         if (response.ok) {
@@ -151,10 +212,16 @@ async function searchMusicBrainzBySoundCloud(soundCloudUrl) {
         const encodedUrl = encodeURIComponent(soundCloudUrl);
         const searchUrl = `https://musicbrainz.org/ws/2/url?query=url:"${encodedUrl}"&fmt=json&inc=artist-rels`;
         
-        const response = await fetch(searchUrl, {
-            headers: {
-                'User-Agent': 'SwayApp/1.0 (contact@sway-app.com)'
-            }
+        const response = await withApiRetry(async () => {
+            return await fetch(searchUrl, {
+                headers: {
+                    'User-Agent': 'SwayApp/1.0 (contact@sway-app.com)'
+                }
+            });
+        }, {
+            maxRetries: 3,
+            initialDelay: 1500, // MusicBrainz rate limiting
+            maxDelay: 15000
         });
         
         if (!response.ok) {
@@ -190,10 +257,16 @@ async function searchMusicBrainzByName(artistName) {
         const encodedName = encodeURIComponent(artistName);
         const searchUrl = `https://musicbrainz.org/ws/2/artist?query=artist:"${encodedName}"&fmt=json&limit=1`;
         
-        const response = await fetch(searchUrl, {
-            headers: {
-                'User-Agent': 'SwayApp/1.0 (contact@sway-app.com)'
-            }
+        const response = await withApiRetry(async () => {
+            return await fetch(searchUrl, {
+                headers: {
+                    'User-Agent': 'SwayApp/1.0 (contact@sway-app.com)'
+                }
+            });
+        }, {
+            maxRetries: 3,
+            initialDelay: 1500, // MusicBrainz rate limiting
+            maxDelay: 15000
         });
         
         if (!response.ok) {
@@ -221,10 +294,16 @@ async function fetchMusicBrainzLinks(artistId) {
     try {
         const url = `https://musicbrainz.org/ws/2/artist/${artistId}?inc=url-rels&fmt=json`;
         
-        const response = await fetch(url, {
-            headers: {
-                'User-Agent': 'SwayApp/1.0 (contact@sway-app.com)'
-            }
+        const response = await withApiRetry(async () => {
+            return await fetch(url, {
+                headers: {
+                    'User-Agent': 'SwayApp/1.0 (contact@sway-app.com)'
+                }
+            });
+        }, {
+            maxRetries: 3,
+            initialDelay: 1500, // MusicBrainz rate limiting
+            maxDelay: 15000
         });
         
         if (!response.ok) {
@@ -365,7 +444,7 @@ async function enrichArtist(artist, accessToken) {
             allLinks.push(...scLinks);
             logMessage(`   📱 Found ${scLinks.length} social media links from SoundCloud`);
             
-            await delay(500); // Rate limiting
+            // Note: Rate limiting and retry logic handled by withApiRetry in the function
         }
         
         // 2. Search MusicBrainz by SoundCloud URL
@@ -390,7 +469,7 @@ async function enrichArtist(artist, accessToken) {
                 logMessage(`   ❌ No MusicBrainz match found for "${artist.name}"`);
             }
             
-            await delay(1000); // MusicBrainz rate limiting
+            // Note: Rate limiting and retry logic handled by withApiRetry in the functions
         }
     }
     
@@ -560,11 +639,36 @@ async function main() {
         
         logMessage(`Found ${allSoundCloudArtists.length} artist(s) with SoundCloud links to process`);
         
-        // Process each artist
+        // Check for previous progress
+        const previousProgress = loadProgress();
+        let processedIds = [];
         let successCount = 0;
         let errorCount = 0;
+        let startIndex = 0;
         
-        for (let i = 0; i < allSoundCloudArtists.length; i++) {
+        if (previousProgress && !options.artistId) {
+            // Resume from where we left off (unless targeting specific artist)
+            processedIds = previousProgress.processedIds || [];
+            successCount = previousProgress.successCount || 0;
+            errorCount = previousProgress.errorCount || 0;
+            
+            // Find where to restart
+            startIndex = allSoundCloudArtists.findIndex(artist => 
+                !processedIds.includes(artist.id)
+            );
+            
+            if (startIndex === -1) {
+                logMessage('✅ All artists already processed according to progress file');
+                clearProgress();
+                return;
+            }
+            
+            logMessage(`🔄 Resuming from artist ${startIndex + 1}/${allSoundCloudArtists.length}`);
+            logMessage(`   Previous stats: ${successCount} successful, ${errorCount} errors`);
+        }
+        
+        // Process each artist starting from the resume point
+        for (let i = startIndex; i < allSoundCloudArtists.length; i++) {
             const artist = allSoundCloudArtists[i];
             
             logMessage(`\n--- Processing ${i + 1}/${allSoundCloudArtists.length} ---`);
@@ -576,14 +680,23 @@ async function main() {
                 } else {
                     errorCount++;
                 }
+                processedIds.push(artist.id);
+                
+                // Save progress every 5 artists or on errors to enable resume
+                if ((i - startIndex + 1) % 5 === 0 || errorCount > 0) {
+                    saveProgress(processedIds, allSoundCloudArtists.length, successCount, errorCount);
+                }
+                
             } catch (error) {
                 logMessage(`❌ Error processing artist ${artist.id}: ${error.message}`);
                 errorCount++;
+                processedIds.push(artist.id);
+                saveProgress(processedIds, allSoundCloudArtists.length, successCount, errorCount);
             }
             
-            // Rate limiting between artists
+            // Rate limiting between artists (shorter since APIs now have their own retry)
             if (i < allSoundCloudArtists.length - 1) {
-                await delay(1500);
+                await delay(1000); // Reduced from 1500ms
             }
         }
         
@@ -596,6 +709,12 @@ async function main() {
         
         if (options.dryRun) {
             logMessage('\n⚠️  DRY_RUN mode - no data was actually updated in the database');
+        }
+        
+        // Clear progress file on successful completion
+        if (processedIds.length === allSoundCloudArtists.length) {
+            clearProgress();
+            logMessage('✅ All artists processed successfully - progress file cleared');
         }
         
         logMessage('=== Enrichment Complete ===');
