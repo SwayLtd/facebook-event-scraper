@@ -12,6 +12,19 @@ An automated system for importing Facebook events with intelligent festival dete
 - **📝 Comprehensive Logging**: Detailed processing logs and error tracking
 - **🎵 Artist Enrichment**: SoundCloud integration for artist data
 - **🧠 OpenAI Integration**: AI-powered artist extraction from event descriptions
+- **🚀 Edge Functions**: Supabase Edge Functions for instant API responses and automatic triggers
+
+## 🆕 New: Edge Functions Integration
+
+**⚡ Instant API responses** - Add events to the queue with <200ms response time using Supabase Edge Functions.
+
+**🎯 Key benefits:**
+- REST API endpoint for adding events
+- Automatic triggers and notifications  
+- No server management required
+- Real-time queue status and monitoring
+
+**📖 Documentation:** See [EDGE_FUNCTIONS.md](EDGE_FUNCTIONS.md) for complete setup and usage guide.
 
 ## 🏗️ Architecture
 
