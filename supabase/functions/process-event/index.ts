@@ -736,10 +736,35 @@ Deno.serve(async (req) => {
             `${festivalDetection.duration.hours.toFixed(1)}h` : 'unknown duration';
           console.log(`🎪 Event detected as FESTIVAL (${durationText}) - will attempt timetable import`);
           
-          // TODO: Implement Clashfinder integration later if needed
-          // For now, fall back to simple event processing
-          console.log(`🔄 Clashfinder integration not yet implemented - falling back to simple processing`);
-          importStrategy = 'simple_fallback';
+          // Implement Clashfinder integration
+          try {
+            console.log('\n🔍 Attempting Clashfinder integration...');
+            const { getClashfinderTimetable, parseClashfinderData } = await import('./utils/clashfinder.ts');
+            const clashfinderResult = await getClashfinderTimetable(eventData.name || 'Unknown Event', {
+              minSimilarity: 30
+            });
+            
+            if (clashfinderResult) {
+              console.log(`✅ Clashfinder festival found: ${clashfinderResult.festival.name} (similarity: ${clashfinderResult.similarity}%)`);
+              const parsedTimetable = await parseClashfinderData(clashfinderResult);
+              
+              if (parsedTimetable && parsedTimetable.length > 0) {
+                console.log(`✅ Clashfinder timetable parsed: ${parsedTimetable.length} performances`);
+                importStrategy = 'festival';
+                timetableData = parsedTimetable;
+              } else {
+                console.log(`❌ No performances found in Clashfinder data - falling back to simple processing`);
+                importStrategy = 'simple_fallback';
+              }
+            } else {
+              console.log(`❌ No Clashfinder data found for "${eventData.name || 'Unknown Event'}" - falling back to simple processing`);
+              importStrategy = 'simple_fallback';
+            }
+          } catch (clashfinderError) {
+            console.error(`❌ Clashfinder integration error:`, clashfinderError);
+            console.log(`🔄 Falling back to simple processing`);
+            importStrategy = 'simple_fallback';
+          }
         } else {
           const durationText = festivalDetection.duration ? 
             `${festivalDetection.duration.hours.toFixed(1)}h` : 'no duration data';
@@ -900,10 +925,37 @@ Deno.serve(async (req) => {
         let totalArtists = 0;
         if (!skipArtists) {
           try {
-            if (importStrategy === 'festival' && timetableData) {
+            if (importStrategy === 'festival' && timetableData && eventId) {
               console.log('\n🎭 Processing festival timetable artists...');
-              // TODO: Implement timetable processing later
-              console.log('⏭️ Timetable processing not yet implemented');
+              
+              try {
+                const { processFestivalTimetable } = await import('./utils/timetable.ts');
+                const result = await processFestivalTimetable(supabase, eventId, timetableData, null, { dryRun: false });
+                totalArtists = result.successCount;
+                console.log(`✅ Festival timetable processing complete: ${totalArtists} artists processed`);
+                console.log(`📊 Processing stats: ${result.processedCount} processed, ${result.successCount} successful, ${result.soundCloudFoundCount} with SoundCloud data`);
+                if (result.errors.length > 0) {
+                  console.log(`⚠️ Processing errors: ${result.errors.length} errors occurred`);
+                }
+              } catch (timetableError) {
+                console.error('❌ Timetable processing failed:', timetableError);
+                console.log('🔄 Falling back to simple event processing...');
+                
+                // Fallback to simple processing
+                if (eventDescription && eventId) {
+                  try {
+                    const artistIds = await processSimpleEventArtists(supabase, eventId, eventDescription, false);
+                    totalArtists = artistIds.length;
+                    console.log(`✅ Fallback simple event processing complete: ${totalArtists} artists processed`);
+                  } catch (fallbackError) {
+                    console.error('❌ Fallback artist processing also failed:', fallbackError);
+                    totalArtists = 0;
+                  }
+                } else {
+                  console.log('⚠️ No event description available for fallback processing');
+                  totalArtists = 0;
+                }
+              }
             } else {
               console.log('\n🎭 Processing simple event artists with OpenAI...');
               if (eventDescription && eventId) {

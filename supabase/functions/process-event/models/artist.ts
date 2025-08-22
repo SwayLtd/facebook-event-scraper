@@ -1387,18 +1387,18 @@ function extractArtistsFromDescription(description: string): string[] {
 /**
  * Find or insert artist (matches local script logic)
  */
-async function findOrInsertArtist(supabase: any, artistObj: any): Promise<number | null> {
-    let artistName = (artistObj.name || '').trim();
-    if (!artistName) return null;
+export async function findOrInsertArtist(supabase: any, artistObj: any): Promise<number | null> {
+    const originalArtistName = (artistObj.name || '').trim();
+    if (!originalArtistName) return null;
 
-    // 1. Name normalization
-    artistName = normalizeNameEnhanced(artistName);
+    // 1. Name normalization for search purposes only
+    const normalizedSearchName = normalizeNameEnhanced(originalArtistName);
 
-    // 2. Search on SoundCloud
+    // 2. Search on SoundCloud using normalized name
     const token = await getAccessToken();
     let scArtist = null;
     if (token) {
-        scArtist = await searchArtist(artistName, token);
+        scArtist = await searchArtist(normalizedSearchName, token);
     }
 
     // 3. Construction of the artistData object and get tracks for tags
@@ -1406,6 +1406,7 @@ async function findOrInsertArtist(supabase: any, artistObj: any): Promise<number
     let soundcloudTags: string[] = [];
     
     if (scArtist) {
+        // When SoundCloud data is found, use the original SoundCloud username (preserves casing)
         artistData = await extractArtistInfo(scArtist);
         
         // Récupérer les tags des tracks SoundCloud pour l'enrichissement des genres
@@ -1417,8 +1418,9 @@ async function findOrInsertArtist(supabase: any, artistObj: any): Promise<number
             }
         }
     } else {
+        // When no SoundCloud data, use the ORIGINAL name (not normalized)
         artistData = {
-            name: artistName,
+            name: originalArtistName,  // Use original name to preserve casing!
             external_links: artistObj.soundcloud
                 ? { soundcloud: { link: artistObj.soundcloud } }
                 : null,
@@ -1436,19 +1438,19 @@ async function findOrInsertArtist(supabase: any, artistObj: any): Promise<number
             .eq('external_links->soundcloud->>id', artistData.external_links.soundcloud.id);
         if (extError) throw extError;
         if (existingByExternal.length > 0) {
-            console.log(`➡️ Artist exists by SoundCloud ID: "${artistName}" (id=${existingByExternal[0].id})`);
+            console.log(`➡️ Artist exists by SoundCloud ID: "${artistData.name}" (id=${existingByExternal[0].id})`);
             return existingByExternal[0].id;
         }
     }
 
-    // 5. Duplicate detection via name
+    // 5. Duplicate detection via name (use normalized name for search)
     const { data: existingByName, error: nameError } = await supabase
         .from('artists')
         .select('id')
-        .ilike('name', artistName);
+        .ilike('name', normalizedSearchName);
     if (nameError) throw nameError;
     if (existingByName.length > 0) {
-        console.log(`➡️ Artist exists by name: "${artistName}" (id=${existingByName[0].id})`);
+        console.log(`➡️ Artist exists by name: "${artistData.name}" (id=${existingByName[0].id})`);
         return existingByName[0].id;
     }
 
@@ -1459,18 +1461,18 @@ async function findOrInsertArtist(supabase: any, artistObj: any): Promise<number
         .select();
     if (insertError || !inserted) throw insertError || new Error("Could not insert artist");
     const newArtistId = inserted[0].id;
-    console.log(`✅ Artist inserted: "${artistName}" (id=${newArtistId})`);
+    console.log(`✅ Artist inserted: "${artistData.name}" (id=${newArtistId})`);
 
     // 7. Processing and linking genres
     try {
         const lastfmApiKey = Deno.env.get('LASTFM_API_KEY');
         if (lastfmApiKey) {
-            await processArtistGenres(supabase, newArtistId, artistName, soundcloudTags, false);
+            await processArtistGenres(supabase, newArtistId, artistData.name, soundcloudTags, false);
         } else {
             console.log('ℹ️ LastFM API key not found, skipping genre processing');
         }
     } catch (err) {
-        console.error("❌ Error processing genres for artist:", artistName, err);
+        console.error("❌ Error processing genres for artist:", artistData.name, err);
     }
 
     return newArtistId;
