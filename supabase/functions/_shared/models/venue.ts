@@ -181,6 +181,19 @@ export async function createOrUpdateVenue(
   try {
     logger.info(`Processing venue: ${venueData.name}`);
 
+    // CRITICAL DEBUG: Log exactly what we have
+    console.error('=== VENUE DEBUG START ===');
+    console.error('venueData properties:', {
+      name: venueData.name,
+      address: venueData.address,
+      addressType: typeof venueData.address,
+      addressLength: venueData.address?.length,
+      city: venueData.city,
+      country: venueData.country,
+      hasAddress: !!venueData.address
+    });
+    console.error('=== VENUE DEBUG END ===');
+
     if (dryRun) {
       logger.info(`[DRY_RUN] Would have created/updated venue: ${venueData.name}`);
       return { 
@@ -194,27 +207,63 @@ export async function createOrUpdateVenue(
     const normalizedVenueName = getNormalizedName(venueData.name);
     
     // Step 1: Try to match by address using ORIGINAL address first (like local system)
+    console.error('STEP 1 CHECK:', { hasAddress: !!venueData.address, address: venueData.address });
     if (venueData.address) {
+      console.error('STEP 1: Entering address-based matching');
       // Clean the address of potential whitespace/control characters
       const cleanAddress = venueData.address.trim().replace(/[\r\n\t]/g, ' ').replace(/\s+/g, ' ');
       
-      // Try exact match first
+      logger.info(`VENUE MATCHING DEBUG: Step 1 - Trying address match with: "${cleanAddress}"`);
+      
+      // Try exact match first with location field
       const { data: venuesByAddress, error: addrError } = await db.client
         .from('venues')
-        .select('id, location, name')
-        .eq('location', cleanAddress);
+        .select('id, location, name, geo')
+        .eq('location', cleanAddress)
+        .order('id', { ascending: true }); // Take the oldest venue (smallest ID)
 
-      if (addrError) throw addrError;
+      if (addrError) {
+        logger.error(`VENUE MATCHING DEBUG: Location query error:`, addrError);
+        throw addrError;
+      }
 
+      logger.info(`VENUE MATCHING DEBUG: Location query returned ${venuesByAddress?.length || 0} venues`);
+      
       if (venuesByAddress && venuesByAddress.length > 0) {
-        logger.info(`Found existing venue by exact address: "${cleanAddress}" (ID: ${venuesByAddress[0].id})`);
+        logger.info(`Found existing venue by exact location match: "${cleanAddress}" (ID: ${venuesByAddress[0].id})`);
         return venuesByAddress[0] as Venue;
+      }
+      
+      // ALSO try exact match with formatted_address from geo field
+      const { data: venuesByFormattedAddr, error: formattedAddrError } = await db.client
+        .from('venues')
+        .select('id, location, name, geo')
+        .eq('geo->>formatted_address', cleanAddress)
+        .order('id', { ascending: true }); // Take the oldest venue (smallest ID)
+
+      if (formattedAddrError) {
+        logger.error(`VENUE MATCHING DEBUG: Formatted address query error:`, formattedAddrError);
+        throw formattedAddrError;
+      }
+
+      logger.info(`VENUE MATCHING DEBUG: Formatted address query returned ${venuesByFormattedAddr?.length || 0} venues`);
+      if (venuesByFormattedAddr && venuesByFormattedAddr.length > 0) {
+        logger.info(`VENUE MATCHING DEBUG: First venue found:`, { 
+          id: venuesByFormattedAddr[0].id, 
+          name: venuesByFormattedAddr[0].name,
+          location: venuesByFormattedAddr[0].location 
+        });
+      }
+
+      if (venuesByFormattedAddr && venuesByFormattedAddr.length > 0) {
+        logger.info(`Found existing venue by exact formatted_address match: "${cleanAddress}" (ID: ${venuesByFormattedAddr[0].id})`);
+        return venuesByFormattedAddr[0] as Venue;
       }
       
       // If exact match fails, try with LIKE to handle potential invisible character issues
       const { data: venuesByAddressLike, error: addrLikeError } = await db.client
         .from('venues')
-        .select('id, location, name')
+        .select('id, location, name, geo')
         .ilike('location', cleanAddress);
 
       if (addrLikeError) throw addrLikeError;
@@ -226,7 +275,97 @@ export async function createOrUpdateVenue(
       }
     }
 
+    // Step 1.5: If no explicit address provided, try using the venue name as an address
+    // This handles Facebook events that provide address as venue name
+    console.error('STEP 1.5 CHECK:', { hasAddress: !!venueData.address, venueName: venueData.name });
+    if (!venueData.address && venueData.name) {
+      console.error('STEP 1.5: Trying venue name as address');
+      
+      // Check if the venue name looks like an address (contains street number or common address patterns)
+      const nameAsAddress = venueData.name.trim().replace(/[\r\n\t]/g, ' ').replace(/\s+/g, ' ');
+      const looksLikeAddress = /\d+.*[A-Za-z].*\d{4}/.test(nameAsAddress) || // Number + text + 4 digits (postal)
+                               /\d+\s+[A-Za-z]/.test(nameAsAddress) || // Number + space + letters
+                               /rue|street|avenue|boulevard|straat|laan/i.test(nameAsAddress); // Address keywords
+      
+      console.error('STEP 1.5:', { nameAsAddress, looksLikeAddress });
+      
+      if (looksLikeAddress) {
+        logger.info(`VENUE MATCHING DEBUG: Step 1.5 - Trying name as address: "${nameAsAddress}"`);
+        
+        // Try exact match with formatted_address from geo field
+        const { data: venuesByNameAsAddr, error: nameAsAddrError } = await db.client
+          .from('venues')
+          .select('id, location, name, geo')
+          .eq('geo->>formatted_address', nameAsAddress)
+          .order('id', { ascending: true }); // Take the oldest venue (smallest ID)
+
+        if (nameAsAddrError) {
+          logger.error(`VENUE MATCHING DEBUG: Name-as-address query error:`, nameAsAddrError);
+        } else {
+          logger.info(`VENUE MATCHING DEBUG: Name-as-address query returned ${venuesByNameAsAddr?.length || 0} venues`);
+          
+          if (venuesByNameAsAddr && venuesByNameAsAddr.length > 0) {
+            logger.info(`Found existing venue using name as address: "${nameAsAddress}" (ID: ${venuesByNameAsAddr[0].id})`);
+            console.error(`STEP 1.5 SUCCESS: Found venue ${venuesByNameAsAddr[0].id} using name as address`);
+            return venuesByNameAsAddr[0] as Venue;
+          }
+        }
+        
+        // Also try with location field
+        const { data: venuesByNameAsLocation, error: nameAsLocationError } = await db.client
+          .from('venues')
+          .select('id, location, name, geo')
+          .eq('location', nameAsAddress)
+          .order('id', { ascending: true }); // Take the oldest venue (smallest ID)
+
+        if (nameAsLocationError) {
+          logger.error(`VENUE MATCHING DEBUG: Name-as-location query error:`, nameAsLocationError);
+        } else {
+          logger.info(`VENUE MATCHING DEBUG: Name-as-location query returned ${venuesByNameAsLocation?.length || 0} venues`);
+          
+          if (venuesByNameAsLocation && venuesByNameAsLocation.length > 0) {
+            logger.info(`Found existing venue using name as location: "${nameAsAddress}" (ID: ${venuesByNameAsLocation[0].id})`);
+            console.error(`STEP 1.5 SUCCESS: Found venue ${venuesByNameAsLocation[0].id} using name as location`);
+            return venuesByNameAsLocation[0] as Venue;
+          }
+        }
+        
+        // If exact matches fail, try fuzzy matching with key address components
+        // Extract street number and postal code for fuzzy matching
+        const streetNumberMatch = nameAsAddress.match(/(\d+)/);
+        const postalCodeMatch = nameAsAddress.match(/(\d{4})/);
+        
+        if (streetNumberMatch && postalCodeMatch) {
+          const streetNumber = streetNumberMatch[1];
+          const postalCode = postalCodeMatch[1];
+          
+          logger.info(`VENUE MATCHING DEBUG: Trying fuzzy address match with number ${streetNumber} and postal ${postalCode}`);
+          console.error(`STEP 1.5 FUZZY: Searching for venues with number ${streetNumber} and postal ${postalCode}`);
+          
+          const { data: fuzzyVenues, error: fuzzyError } = await db.client
+            .from('venues')
+            .select('id, location, name, geo')
+            .or(`and(geo->>formatted_address.like.%${streetNumber}%,geo->>formatted_address.like.%${postalCode}%),and(location.like.%${streetNumber}%,location.like.%${postalCode}%)`)
+            .order('id', { ascending: true }); // Take the oldest venue (smallest ID)
+
+          if (fuzzyError) {
+            logger.error(`VENUE MATCHING DEBUG: Fuzzy address query error:`, fuzzyError);
+          } else {
+            logger.info(`VENUE MATCHING DEBUG: Fuzzy address query returned ${fuzzyVenues?.length || 0} venues`);
+            console.error(`STEP 1.5 FUZZY: Found ${fuzzyVenues?.length || 0} venues with fuzzy match`);
+            
+            if (fuzzyVenues && fuzzyVenues.length > 0) {
+              logger.info(`Found existing venue using fuzzy address match: "${nameAsAddress}" -> "${fuzzyVenues[0].name}" (ID: ${fuzzyVenues[0].id})`);
+              console.error(`STEP 1.5 FUZZY SUCCESS: Found venue ${fuzzyVenues[0].id} (${fuzzyVenues[0].name}) using fuzzy address match`);
+              return fuzzyVenues[0] as Venue;
+            }
+          }
+        }
+      }
+    }
+
     // Step 2: Try to match by exact normalized name - EXACT like local system  
+    logger.info('STEP 2: Trying exact normalized name match', { normalizedVenueName });
     const { data: venuesByName, error: nameError } = await db.client
       .from('venues')
       .select('id, name, location')
@@ -237,9 +376,12 @@ export async function createOrUpdateVenue(
     if (venuesByName && venuesByName.length > 0) {
       logger.info(`Found existing venue by exact name: ${venuesByName[0].name} (ID: ${venuesByName[0].id})`);
       return venuesByName[0] as Venue;
+    } else {
+      logger.info(`STEP 2: No venue found by exact name: ${normalizedVenueName}`);
     }
 
     // Step 3: Try fuzzy matching with all venues - EXACT like local system
+    logger.info('STEP 3: Trying fuzzy matching');
     const { data: allVenues, error: allVenuesError } = await db.client
       .from('venues')
       .select('id, name, location');
