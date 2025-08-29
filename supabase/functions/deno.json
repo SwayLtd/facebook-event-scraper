@@ -1,0 +1,14 @@
+{
+  "compilerOptions": {
+    "allowJs": true,
+    "lib": ["deno.window"],
+    "strict": true
+  },
+  "imports": {
+    "@supabase/supabase-js": "https://esm.sh/@supabase/supabase-js@2.39.0",
+    "@supabase/functions-js": "https://esm.sh/@supabase/functions-js@2.1.1",
+    "openai": "https://esm.sh/openai@4.20.1",
+    "string-similarity": "https://esm.sh/string-similarity@4.0.4",
+    "fuse.js": "https://esm.sh/fuse.js@7.0.0"
+  }
+}

@@ -53,3 +53,8 @@ outputs/*
 *.xlsx
 *.bak
 enrichment_progress.json
+
+########################################
+# Supabase
+########################################
+supabase/.temp/*
