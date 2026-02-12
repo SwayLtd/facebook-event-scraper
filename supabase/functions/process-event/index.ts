@@ -271,6 +271,24 @@ Deno.serve(async (req) => {
       });
     }
 
+    // Persist scraped facebook_event_data in the queue row for future reference
+    if (queueId && eventData) {
+      try {
+        const { error: cacheError } = await supabase
+          .from('facebook_events_imports')
+          .update({ facebook_event_data: eventData })
+          .eq('id', queueId);
+        
+        if (cacheError) {
+          logger.warn('Failed to cache facebook_event_data', { queueId, error: cacheError.message });
+        } else {
+          logger.info('Cached facebook_event_data in queue row', { queueId });
+        }
+      } catch (cacheErr) {
+        logger.warn('Error caching facebook_event_data', { queueId, error: cacheErr.message });
+      }
+    }
+
     // === DÉTECTION FESTIVAL ===
     const festivalDetection = detectFestival(eventData, { forceFestival });
 
