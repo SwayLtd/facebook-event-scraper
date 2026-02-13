@@ -46,6 +46,136 @@ export interface ExternalLinks {
 }
 
 /**
+ * Scrapes a high-quality image from a Facebook page by extracting the og:image meta tag.
+ * This approach doesn't require any API token and provides high-resolution images.
+ * @param facebookUrl - The Facebook page URL (e.g., https://www.facebook.com/pagename)
+ * @returns Promise with URL of the high-quality image or null
+ */
+export async function scrapePromoterImage(facebookUrl: string): Promise<string | null> {
+  if (!facebookUrl) return null;
+
+  try {
+    logger.debug(`Scraping og:image from Facebook page: ${facebookUrl}`);
+
+    const response = await fetch(facebookUrl, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.5',
+      },
+      redirect: 'follow',
+    });
+
+    if (!response.ok) {
+      logger.warn(`Failed to fetch Facebook page: HTTP ${response.status}`, { url: facebookUrl });
+      return null;
+    }
+
+    const html = await response.text();
+
+    // Extract og:image content from meta tag
+    const ogImageMatch = html.match(/<meta\s+property="og:image"\s+content="([^"]+)"/i)
+      || html.match(/<meta\s+content="([^"]+)"\s+property="og:image"/i);
+
+    if (!ogImageMatch || !ogImageMatch[1]) {
+      logger.warn('No og:image meta tag found on Facebook page', { url: facebookUrl });
+      return null;
+    }
+
+    // Decode HTML entities in the URL
+    let imageUrl = ogImageMatch[1]
+      .replace(/&amp;/g, '&')
+      .replace(/&lt;/g, '<')
+      .replace(/&gt;/g, '>')
+      .replace(/&quot;/g, '"')
+      .replace(/&#039;/g, "'");
+
+    // Validate it looks like a real image URL
+    if (!imageUrl.startsWith('http')) {
+      logger.warn('og:image URL is not a valid HTTP URL', { imageUrl, url: facebookUrl });
+      return null;
+    }
+
+    logger.info(`Found og:image for Facebook page`, { url: facebookUrl, imageUrl: imageUrl.substring(0, 100) + '...' });
+    return imageUrl;
+
+  } catch (error) {
+    logger.error('Error scraping promoter image from Facebook page', error, { url: facebookUrl });
+    return null;
+  }
+}
+
+/**
+ * Checks if an image URL is likely a low-quality Facebook thumbnail.
+ * Common patterns: small profile pictures (p50x50, p100x100), scontent with small dimensions.
+ */
+function isLowQualityImage(imageUrl: string): boolean {
+  if (!imageUrl) return true;
+  // Typical low-quality Facebook profile picture patterns
+  const lowQualityPatterns = [
+    /p\d{2,3}x\d{2,3}\//i,   // p50x50/, p100x100/ etc.
+    /\/s\d{2,3}x\d{2,3}\//i, // /s100x100/ etc.
+    /\.jpg\?.*_nc_cat.*oh=/i, // Old-style small thumbnails
+    /\/t1\.0-0\/p/i,          // Profile picture thumbnails
+  ];
+  return lowQualityPatterns.some(p => p.test(imageUrl));
+}
+
+/**
+ * Tries to get the best quality image using multiple strategies, in order:
+ * 1. Scrape og:image from the Facebook page URL
+ * 2. Fetch via Facebook Graph API (if objectId available)
+ * 3. Fallback to the event host photo.imageUri (thumbnail)
+ * @param promoterSource - The host data from the event
+ * @param existingExternalLinks - Existing external_links (for promoters already in DB)
+ * @returns The best image URL found, or null
+ */
+async function tryGetBestImage(
+  promoterSource?: PromoterSource,
+  existingExternalLinks?: ExternalLinks | null
+): Promise<string | null> {
+  // Determine the Facebook page URL from source or existing external_links
+  const facebookPageUrl = promoterSource?.url
+    || existingExternalLinks?.facebook?.link
+    || null;
+
+  // 1) Try og:image scraping (best quality, no token needed)
+  if (facebookPageUrl) {
+    try {
+      const ogImage = await scrapePromoterImage(facebookPageUrl);
+      if (ogImage) {
+        logger.info('Got high-quality image via og:image scraping');
+        return ogImage;
+      }
+    } catch (error) {
+      logger.warn('og:image scraping failed, trying fallbacks', error);
+    }
+  }
+
+  // 2) Try Facebook Graph API (needs LONG_LIVED_TOKEN)
+  const objectId = promoterSource?.id || existingExternalLinks?.facebook?.id || null;
+  if (objectId) {
+    try {
+      const graphImage = await fetchHighResImage(objectId);
+      if (graphImage) {
+        logger.info('Got high-quality image via Facebook Graph API');
+        return graphImage;
+      }
+    } catch (error) {
+      logger.warn('Graph API image fetch failed', error);
+    }
+  }
+
+  // 3) Fallback to thumbnail from event host data
+  if (promoterSource?.photo?.imageUri) {
+    logger.info('Using thumbnail fallback from event host data');
+    return promoterSource.photo.imageUri;
+  }
+
+  return null;
+}
+
+/**
  * Fetches a high-resolution image from Facebook Graph API
  * @param objectId - The Facebook object ID (e.g., page or event ID)
  * @returns Promise with URL of the high-resolution image or null
@@ -157,6 +287,25 @@ export async function findOrInsertPromoter(
         }
       }
 
+      // Upgrade image if missing or low-quality (small thumbnail)
+      if (!promoter.image_url || isLowQualityImage(promoter.image_url)) {
+        const upgradedImage = await tryGetBestImage(promoterSource, promoter.external_links);
+        if (upgradedImage) {
+          try {
+            const { error: imgError } = await db.client
+              .from('promoters')
+              .update({ image_url: upgradedImage })
+              .eq('id', promoter.id);
+            if (!imgError) {
+              promoter.image_url = upgradedImage;
+              logger.info(`Upgraded image for promoter id=${promoter.id}`);
+            }
+          } catch (error) {
+            logger.warn('Failed to upgrade promoter image', error);
+          }
+        }
+      }
+
       logger.info(`Promoter "${promoterName}" found (exact match) → id=${promoter.id}`);
       return promoter;
     }
@@ -212,6 +361,25 @@ export async function findOrInsertPromoter(
           }
         }
 
+        // Upgrade image if missing or low-quality (small thumbnail)
+        if (!bestMatch.image_url || isLowQualityImage(bestMatch.image_url)) {
+          const upgradedImage = await tryGetBestImage(promoterSource, bestMatch.external_links);
+          if (upgradedImage) {
+            try {
+              const { error: imgError } = await db.client
+                .from('promoters')
+                .update({ image_url: upgradedImage })
+                .eq('id', bestMatch.id);
+              if (!imgError) {
+                bestMatch.image_url = upgradedImage;
+                logger.info(`Upgraded image for promoter id=${bestMatch.id}`);
+              }
+            } catch (error) {
+              logger.warn('Failed to upgrade promoter image', error);
+            }
+          }
+        }
+
         logger.info(`Promoter "${promoterName}" similar to "${bestMatch.name}" → id=${bestMatch.id} (similarity: ${bestRating.toFixed(3)})`);
         return bestMatch;
       }
@@ -227,21 +395,10 @@ export async function findOrInsertPromoter(
     name: normalizedName
   };
 
-  // Try to get high-resolution image via Facebook Graph
-  if (promoterSource?.id) {
-    try {
-      const highResImage = await fetchHighResImage(promoterSource.id);
-      if (highResImage) {
-        newPromoterData.image_url = highResImage;
-      }
-    } catch (error) {
-      logger.warn('Failed to fetch high-resolution Facebook image', error);
-    }
-  }
-
-  // Fallback to photo.imageUri if available
-  if (!newPromoterData.image_url && promoterSource?.photo?.imageUri) {
-    newPromoterData.image_url = promoterSource.photo.imageUri;
+  // Try to get the best quality image (og:image scraping → Graph API → thumbnail fallback)
+  const bestImage = await tryGetBestImage(promoterSource);
+  if (bestImage) {
+    newPromoterData.image_url = bestImage;
   }
 
   // Add Facebook external_links if available
@@ -436,6 +593,7 @@ export async function searchPromoters(searchTerm: string): Promise<Promoter[]> {
 }
 
 export default {
+  scrapePromoterImage,
   fetchHighResImage,
   findOrInsertPromoter,
   assignPromoterGenres,
