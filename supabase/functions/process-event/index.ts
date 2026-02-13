@@ -318,7 +318,30 @@ Deno.serve(async (req) => {
     if (!startTimeISO) {
       throw new Error('Event start date is required (provide either startTimestamp or startDate)');
     }
-    
+
+    // === GUARD: Reject events older than 1 year ===
+    const MAX_EVENT_AGE_MS = 365 * 24 * 60 * 60 * 1000; // 1 year
+    const eventStartDate = new Date(startTimeISO);
+    const now = new Date();
+    if (now.getTime() - eventStartDate.getTime() > MAX_EVENT_AGE_MS) {
+      logger.warn('Skipping old event (older than 1 year)', {
+        name: eventData.name,
+        startTime: startTimeISO,
+        ageInDays: Math.floor((now.getTime() - eventStartDate.getTime()) / (24 * 60 * 60 * 1000))
+      });
+      await updateQueueStatus(supabase, queueId, 'completed', undefined, 0);
+      return new Response(
+        JSON.stringify({
+          success: false,
+          skipped: true,
+          reason: 'Event is older than 1 year',
+          eventName: eventData.name,
+          startTime: startTimeISO
+        }),
+        { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
+    }
+
     const fbEventUrl = eventData.url || facebookEventUrl;
 
     logger.info('Processing event data', {
@@ -504,6 +527,48 @@ Deno.serve(async (req) => {
               logger.info(`Event ${eventDbId} linked to venue ${venueId} via event_venue table`);
             } else {
               logger.error('Failed to create event-venue relation', relationError);
+            }
+
+            // === VENUE IMAGE PRIORITY: Use promoter image when venue name matches a promoter ===
+            try {
+              const venueName = (venueDataToProcess.name || '').toLowerCase().trim();
+              if (venueName && promoterIds.length > 0) {
+                // Get promoter data to compare names
+                const { data: matchedPromoters } = await supabase
+                  .from('promoters')
+                  .select('id, name, image_url')
+                  .in('id', promoterIds)
+                  .not('image_url', 'is', null);
+
+                if (matchedPromoters) {
+                  const matchingPromoter = matchedPromoters.find(
+                    (p: any) => p.name && p.name.toLowerCase().trim() === venueName
+                  );
+
+                  if (matchingPromoter && matchingPromoter.image_url) {
+                    // Check if venue has no image or only a Google Maps image
+                    const { data: venueData } = await supabase
+                      .from('venues')
+                      .select('image_url')
+                      .eq('id', venueId)
+                      .single();
+
+                    const currentImage = venueData?.image_url || '';
+                    const isGoogleImage = currentImage.includes('maps.googleapis.com');
+                    const hasNoImage = !currentImage;
+
+                    if (hasNoImage || isGoogleImage) {
+                      await supabase
+                        .from('venues')
+                        .update({ image_url: matchingPromoter.image_url })
+                        .eq('id', venueId);
+                      logger.info(`Venue ${venueId} image updated from matching promoter ${matchingPromoter.id} (${matchingPromoter.name})`);
+                    }
+                  }
+                }
+              }
+            } catch (imgErr) {
+              logger.warn('Failed to check/update venue image from promoter', imgErr);
             }
           } else {
             logger.warn('No venue returned from createOrUpdateVenue');

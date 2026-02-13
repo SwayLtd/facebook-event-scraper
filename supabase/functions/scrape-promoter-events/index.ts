@@ -220,10 +220,16 @@ Deno.serve(async (req) => {
                 const oneYearAgo = Date.now() - MAX_EVENT_AGE_MS;
                 const activeEvents = dedupedEvents.filter((e: any) => {
                     if (e.isCanceled) return false;
-                    // If event has a start timestamp, check it's within 1 year
+                    // Check event age: reject events older than 1 year
                     if (e.startTimestamp) {
                         const eventTime = e.startTimestamp * 1000; // FB timestamps are in seconds
                         if (eventTime < oneYearAgo) return false;
+                    } else if (e.date) {
+                        // Fallback: parse date string if no timestamp
+                        try {
+                            const parsed = new Date(e.date);
+                            if (!isNaN(parsed.getTime()) && parsed.getTime() < oneYearAgo) return false;
+                        } catch { /* keep event if date parsing fails */ }
                     }
                     return true;
                 });
