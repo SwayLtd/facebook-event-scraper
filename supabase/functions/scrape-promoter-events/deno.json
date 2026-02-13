@@ -1,0 +1,14 @@
+{
+    "imports": {
+        "@supabase/supabase-js": "https://esm.sh/@supabase/supabase-js@2",
+        "facebook-event-scraper": "npm:facebook-event-scraper@0.2.6"
+    },
+    "compilerOptions": {
+        "lib": [
+            "deno.window"
+        ],
+        "types": [
+            "https://deno.land/x/xhr@0.3.0/mod.ts"
+        ]
+    }
+}
