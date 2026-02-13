@@ -3,26 +3,21 @@
 
 export interface Event {
   id?: number;
-  name: string;
+  title: string;
+  type?: string;
   description?: string;
-  start_time: string;
-  end_time?: string;
-  location?: string;
-  venue_name?: string;
-  venue_id?: number;
-  promoter_id?: number;
-  facebook_event_id?: string;
-  external_url?: string;
+  date_time: string;
+  end_date_time?: string;
   image_url?: string;
-  ticket_url?: string;
-  created_at?: string;
-  updated_at?: string;
-  status?: 'active' | 'cancelled' | 'postponed';
-  is_festival?: boolean;
-  duration_hours?: number;
   metadata?: Record<string, any>;
-  genres?: string[];
-  artists?: Artist[];
+  promoter_stripe_account_id?: string;
+  hmac_token?: string;
+  score_boost?: number;
+  external_id?: string;
+  status?: string;
+  is_published?: boolean;
+  first_published_at?: string;
+  created_at?: string;
 }
 
 export interface Artist {
@@ -60,59 +55,52 @@ export interface Artist {
 export interface Venue {
   id?: number;
   name: string;
-  address?: string;
-  city?: string;
-  country?: string;
-  latitude?: number;
-  longitude?: number;
-  capacity?: number;
-  website_url?: string;
-  facebook_url?: string;
-  phone?: string;
-  email?: string;
-  google_places_id?: string;
+  description?: string;
+  location?: string;
+  image_url?: string;
+  capacity?: Record<string, any>;
+  is_verified?: boolean;
+  geo?: {
+    latitude?: number;
+    longitude?: number;
+    google_places_id?: string;
+    formatted_address?: string;
+    locality?: string;
+    country?: string;
+  };
+  location_point?: string; // PostGIS point (WKT or GeoJSON)
   created_at?: string;
-  updated_at?: string;
 }
 
 export interface Promoter {
   id?: number;
   name: string;
   description?: string;
-  website_url?: string;
-  facebook_url?: string;
-  instagram_url?: string;
-  twitter_url?: string;
-  email?: string;
-  phone?: string;
-  logo_url?: string;
   image_url?: string;
+  is_verified?: boolean;
+  stripe_account_id?: string;
   external_links?: Record<string, any>;
+  share_permissions_to_events?: boolean;
   created_at?: string;
-  updated_at?: string;
 }
 
 export interface Genre {
   id?: number;
   name: string;
   description?: string;
-  parent_genre_id?: number;
-  color?: string;
-  is_electronic?: boolean;
+  external_links?: Record<string, any>;
   created_at?: string;
-  updated_at?: string;
-  metadata?: Record<string, any>;
 }
 
-export interface Timetable {
+export interface EventArtist {
   id?: number;
   event_id: number;
-  artist_id: number[];  // Array of artist IDs
-  start_time?: string;
-  end_time?: string;
-  stage?: string;
+  artist_id: string[];  // Array of artist IDs (string format for Supabase int[])
+  start_time?: string | null;
+  end_time?: string | null;
   status?: string;
-  custom_name?: string;
+  stage?: string | null;
+  custom_name?: string | null;
   created_at?: string;
 }
 

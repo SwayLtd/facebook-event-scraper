@@ -562,23 +562,27 @@ Additional Instructions:
           const artistResult = await findOrInsertArtist(enhancedArtistObj);
           if (artistResult) {
             processedArtistIds.push(artistResult);
+            
+            // Link artist to event WITH performance data (stage, time) — like local script  
+            if (typeof artistResult === 'number') {
+              try {
+                await db.createEventArtistRelation(eventId, [artistResult], {
+                  stage: artistObj.stage || null,
+                  start_time: artistObj.time || null,
+                  end_time: null
+                });
+                logger.info(`Created event_artist relation for "${artistObj.name}" (ID: ${artistResult})`, {
+                  stage: artistObj.stage || null,
+                  time: artistObj.time || null
+                });
+              } catch (relError) {
+                logger.error(`Error creating event_artist relation for "${artistObj.name}"`, relError);
+              }
+            }
           }
         } catch (error) {
           logger.error(`Error processing artist "${artistObj.name}"`, error);
         }
-      }
-    }
-    
-    // Create event_artist relations after processing all artists
-    if (processedArtistIds.length > 0) {
-      try {
-        const artistNumbers = processedArtistIds.filter(id => typeof id === 'number') as number[];
-        if (artistNumbers.length > 0) {
-          await db.createEventArtistRelation(eventId, artistNumbers);
-          logger.info(`Created event_artist relations for ${artistNumbers.length} artists`);
-        }
-      } catch (error) {
-        logger.error('Error creating event_artist relations', error);
       }
     }
     

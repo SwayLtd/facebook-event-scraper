@@ -4,7 +4,12 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { db } from '../utils/database.ts';
 import { logger } from '../utils/logger.ts';
-import { Timetable } from '../types/index.ts';
+import { EventArtist } from '../types/index.ts';
+
+// NOTE: This model references 'event_artist' table (not 'timetables' which does not exist).
+// The EventArtist type replaces the old Timetable type.
+// This module is currently not imported/used by process-event.
+type Timetable = EventArtist;
 
 // Luxon alternative using native Date for timezone handling
 interface ParsedDateTime {
@@ -337,17 +342,18 @@ export async function createTimetableEntries(
 
   for (const performance of performances) {
     try {
-      // For this example, we assume artist_id is provided or needs to be looked up
-      // In a real implementation, you would need to resolve the artist from performance.name
-      const timetableData: Omit<Timetable, 'id' | 'created_at' | 'updated_at'> = {
+      // Create event_artist entry (artist_id should be resolved from the artist name)
+      const entryData = {
         event_id: eventId,
-        artist_id: 1, // This should be resolved from the artist name
-        start_time: performance.time || new Date().toISOString(),
-        end_time: performance.end_time,
-        stage: performance.stage
+        artist_id: ['1'], // This should be resolved from the artist name
+        start_time: performance.time || null,
+        end_time: performance.end_time || null,
+        status: 'confirmed',
+        stage: performance.stage || null,
+        custom_name: null
       };
 
-      const entry = await db.createTimetableEntry(timetableData);
+      const entry = await db.createEventArtistLink(entryData);
       createdEntries.push(entry);
 
     } catch (error) {
@@ -367,11 +373,8 @@ export async function createTimetableEntries(
 export async function getTimetableByEvent(eventId: number): Promise<Timetable[]> {
   try {
     const { data, error } = await db.client
-      .from('timetables')
-      .select(`
-        *,
-        artists(name, image_url)
-      `)
+      .from('event_artist')
+      .select('*')
       .eq('event_id', eventId)
       .order('start_time');
 

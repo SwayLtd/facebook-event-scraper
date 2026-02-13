@@ -550,7 +550,7 @@ export async function searchVenues(searchTerm: string): Promise<Venue[]> {
     const { data, error } = await db.client
       .from('venues')
       .select('*')
-      .or(`name.ilike.%${searchTerm}%,address.ilike.%${searchTerm}%,city.ilike.%${searchTerm}%`)
+      .or(`name.ilike.%${searchTerm}%,location.ilike.%${searchTerm}%`)
       .limit(10);
 
     if (error) throw error;

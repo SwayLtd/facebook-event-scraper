@@ -497,11 +497,19 @@ Deno.serve(async (req) => {
         });
         
         // DEBUG: Log exact venue data being passed
+        // Facebook returns city/country as objects {id, name}, extract .name
+        const cityStr = typeof eventData.location.city === 'object' 
+          ? eventData.location.city?.name 
+          : eventData.location.city;
+        const countryStr = typeof eventData.location.country === 'object'
+          ? eventData.location.country?.name
+          : eventData.location.country;
+          
         const venueDataToProcess = {
           name: eventData.location.name || 'Unknown Venue',
           address: eventData.location.address || undefined,
-          city: eventData.location.city || undefined,
-          country: eventData.location.country || undefined
+          city: cityStr || undefined,
+          country: countryStr || undefined
         };
         logger.info('VENUE DEBUG: Exact data passed to createOrUpdateVenue:', venueDataToProcess);
         
@@ -587,28 +595,41 @@ Deno.serve(async (req) => {
         });
       }
 
-      // Créer les relations venue-promoter si nous avons un venue et des promoters
-      if (venueId && promoterIds.length > 0) {
-        logger.info(`Creating venue-promoter relations for ${promoterIds.length} promoters`);
+      // Créer les relations venue-promoter UNIQUEMENT quand le nom du promoteur correspond au nom du venue
+      // (comme dans le script local — un venue est lié à un promoteur seulement si c'est le même établissement)
+      if (venueId && promoterIds.length > 0 && eventData.location?.name) {
+        const venueName = (eventData.location.name || '').toLowerCase().trim();
+        logger.info(`Checking venue-promoter relations: venue "${venueName}" vs ${promoterIds.length} promoters`);
         
-        for (const promoterId of promoterIds) {
-          try {
-            const { error: vpRelationError } = await supabase
-              .from('venue_promoter')
-              .upsert({ 
-                venue_id: venueId, 
-                promoter_id: promoterId 
-              }, { 
-                onConflict: 'venue_id,promoter_id' 
-              });
-              
-            if (!vpRelationError) {
-              logger.info(`Venue-promoter relation created: venue ${venueId} <-> promoter ${promoterId}`);
-            } else {
-              logger.error(`Failed to create venue-promoter relation: ${vpRelationError.message}`);
+        // Get promoter names to compare with venue name
+        const { data: promoterData } = await supabase
+          .from('promoters')
+          .select('id, name')
+          .in('id', promoterIds);
+        
+        if (promoterData) {
+          for (const promoter of promoterData) {
+            const promoterName = (promoter.name || '').toLowerCase().trim();
+            if (promoterName === venueName) {
+              try {
+                const { error: vpRelationError } = await supabase
+                  .from('venue_promoter')
+                  .upsert({ 
+                    venue_id: venueId, 
+                    promoter_id: promoter.id 
+                  }, { 
+                    onConflict: 'venue_id,promoter_id' 
+                  });
+                  
+                if (!vpRelationError) {
+                  logger.info(`Venue-promoter relation created (name match): venue ${venueId} <-> promoter ${promoter.id} ("${promoter.name}")`);
+                } else {
+                  logger.error(`Failed to create venue-promoter relation: ${vpRelationError.message}`);
+                }
+              } catch (vpError) {
+                logger.error(`Error creating venue-promoter relation for promoter ${promoter.id}`, vpError);
+              }
             }
-          } catch (vpError) {
-            logger.error(`Error creating venue-promoter relation for promoter ${promoterId}`, vpError);
           }
         }
       }

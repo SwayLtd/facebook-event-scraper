@@ -64,6 +64,11 @@ export const BANNED_GENRES = [
   "internet", "episode", "r", "D", "club", "dj", "mix", "radio", "soundcloud", "sesh"
 ];
 
+// Pre-computed slugified banned genres for correct case-insensitive comparison
+export const BANNED_GENRES_SLUGS = new Set(
+  BANNED_GENRES.map(g => g.replace(/\W/g, '').toLowerCase())
+);
+
 // Rate limiting configuration
 export const SOUNDCLOUD_RATE_LIMIT = {
   requests_per_minute: 10,

@@ -39,7 +39,7 @@ export async function findEvent(params: {
     logger.debug(`Searching event by Facebook URL: ${facebookUrl}`);
     const eventsByUrl = await db.getEventsByFacebookUrl(facebookUrl);
     if (eventsByUrl.length > 0) {
-      logger.info(`Found event by Facebook URL: ${eventsByUrl[0].name}`);
+      logger.info(`Found event by Facebook URL: ${eventsByUrl[0].title}`);
       return eventsByUrl[0];
     }
   }
@@ -49,7 +49,7 @@ export async function findEvent(params: {
     logger.debug(`Searching event by title: ${title}`);
     const eventsByTitle = await db.getEventsByName(title);
     if (eventsByTitle.length > 0) {
-      logger.info(`Found event by title: ${eventsByTitle[0].name}`);
+      logger.info(`Found event by title: ${eventsByTitle[0].title}`);
       return eventsByTitle[0];
     }
   }
@@ -195,22 +195,22 @@ export async function createEvent(
 ): Promise<Event> {
   try {
     if (dryRun) {
-      logger.info(`[DRY_RUN] Would have created event: ${eventData.name}`);
+      logger.info(`[DRY_RUN] Would have created event: ${eventData.title}`);
       return { ...eventData, id: 999999 } as Event;
     }
     
     // Validate required fields
-    if (!eventData.name) {
-      throw new Error('Event name is required');
+    if (!eventData.title) {
+      throw new Error('Event title is required');
     }
     
-    if (!eventData.start_time) {
-      throw new Error('Event start time is required');
+    if (!eventData.date_time) {
+      throw new Error('Event date_time is required');
     }
     
     // Create event in database
     const createdEvent = await db.createEvent(eventData);
-    logger.info(`Created new event: ${createdEvent.name} (ID: ${createdEvent.id})`);
+    logger.info(`Created new event: ${createdEvent.title} (ID: ${createdEvent.id})`);
     
     return createdEvent;
     
@@ -241,7 +241,7 @@ export async function updateEvent(
     }
     
     const updatedEvent = await db.updateEvent(eventId, eventData);
-    logger.info(`Updated event: ${updatedEvent.name} (ID: ${updatedEvent.id})`);
+    logger.info(`Updated event: ${updatedEvent.title} (ID: ${updatedEvent.id})`);
     
     return updatedEvent;
     
@@ -260,7 +260,6 @@ export async function getEvents(filters?: {
   status?: string;
   start_date?: string;
   end_date?: string;
-  venue_id?: number;
 }): Promise<Event[]> {
   try {
     const events = await db.getEvents(filters);

@@ -4,7 +4,7 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import { logger } from './logger.ts';
-import { Event, Artist, Venue, Promoter, Genre, Timetable, ValidationResult } from '../types/index.ts';
+import { Event, Artist, Venue, Promoter, Genre, EventArtist, ValidationResult } from '../types/index.ts';
 
 class DatabaseClient {
   private supabase: SupabaseClient;
@@ -83,7 +83,7 @@ class DatabaseClient {
       const { data, error } = await this.supabase
         .from('events')
         .select('*')
-        .eq('facebook_event_id', facebookEventId)
+        .ilike('metadata->>facebook_url', `%${facebookEventId}%`)
         .maybeSingle();
 
       const duration = timer();
@@ -131,7 +131,6 @@ class DatabaseClient {
     status?: string;
     start_date?: string;
     end_date?: string;
-    venue_id?: number;
   }): Promise<Event[]> {
     const timer = logger.startTimer('db_get_events');
     
@@ -145,15 +144,11 @@ class DatabaseClient {
       }
       
       if (filters?.start_date) {
-        query = query.gte('start_time', filters.start_date);
+        query = query.gte('date_time', filters.start_date);
       }
       
       if (filters?.end_date) {
-        query = query.lte('start_time', filters.end_date);
-      }
-      
-      if (filters?.venue_id) {
-        query = query.eq('venue_id', filters.venue_id);
+        query = query.lte('date_time', filters.end_date);
       }
 
       const { data, error } = await query;
@@ -180,7 +175,7 @@ class DatabaseClient {
       const { data, error } = await this.supabase
         .from('events')
         .select('*')
-        .eq('name', name);
+        .eq('title', name);
 
       const duration = timer();
       
@@ -585,9 +580,13 @@ class DatabaseClient {
     }
   }
 
-  // ===== TIMETABLE OPERATIONS =====
+  // ===== EVENT-ARTIST RELATION OPERATIONS =====
   
-  async createEventArtistRelation(eventId: number, artistIds: number[], stage?: string): Promise<void> {
+  async createEventArtistRelation(
+    eventId: number,
+    artistIds: number[],
+    performanceData?: { stage?: string | null; start_time?: string | null; end_time?: string | null }
+  ): Promise<void> {
     const timer = logger.startTimer('db_create_event_artist_relation');
     
     try {
@@ -604,9 +603,9 @@ class DatabaseClient {
       // Get already existing artist IDs to avoid duplicates
       const existingArtistIds = new Set<number>();
       if (existingRelations) {
-        existingRelations.forEach(rel => {
+        existingRelations.forEach((rel: any) => {
           if (rel.artist_id && Array.isArray(rel.artist_id)) {
-            rel.artist_id.forEach(id => existingArtistIds.add(id));
+            rel.artist_id.forEach((id: any) => existingArtistIds.add(Number(id)));
           }
         });
       }
@@ -624,13 +623,13 @@ class DatabaseClient {
       
       // Create individual relations for each artist (like local system)
       const relationPromises = newArtistIds.map(artistId => {
-        const relationData = {
+        const relationData: any = {
           event_id: eventId,
-          artist_id: [artistId], // Array with single ID, matching local system behavior
+          artist_id: [String(artistId)], // Array with single ID as string, matching local system behavior
           status: 'confirmed',
-          stage: stage || null,
-          start_time: null, // Don't invent times - same as local system
-          end_time: null,
+          stage: performanceData?.stage || null,
+          start_time: performanceData?.start_time || null,
+          end_time: performanceData?.end_time || null,
           custom_name: null
         };
 
@@ -658,59 +657,30 @@ class DatabaseClient {
     }
   }
   
-  async createTimetableEntry(timetableData: Omit<Timetable, 'id' | 'created_at' | 'updated_at'>): Promise<Timetable> {
-    const timer = logger.startTimer('db_create_timetable');
-    
-    try {
-      const { data, error } = await this.supabase
-        .from('timetables')
-        .insert([timetableData])
-        .select()
-        .single();
-
-      const duration = timer();
-      
-      if (error) {
-        logger.logDbOperation('CREATE', 'timetables', false, 0, error);
-        throw error;
-      }
-
-      logger.logDbOperation('CREATE', 'timetables', true, 1);
-      return data as Timetable;
-    } catch (error) {
-      timer();
-      throw error;
-    }
-  }
-
   // ===== VALIDATION HELPERS =====
   
   validateEvent(eventData: Partial<Event>): ValidationResult {
     const errors: string[] = [];
     const warnings: string[] = [];
 
-    if (!eventData.name || eventData.name.trim().length === 0) {
-      errors.push('Event name is required');
+    if (!eventData.title || eventData.title.trim().length === 0) {
+      errors.push('Event title is required');
     }
 
-    if (!eventData.start_time) {
-      errors.push('Event start time is required');
+    if (!eventData.date_time) {
+      errors.push('Event date_time is required');
     } else {
-      const startTime = new Date(eventData.start_time);
+      const startTime = new Date(eventData.date_time);
       if (isNaN(startTime.getTime())) {
-        errors.push('Invalid start time format');
-      } else if (eventData.end_time) {
-        const endTime = new Date(eventData.end_time);
+        errors.push('Invalid date_time format');
+      } else if (eventData.end_date_time) {
+        const endTime = new Date(eventData.end_date_time);
         if (isNaN(endTime.getTime())) {
-          errors.push('Invalid end time format');
+          errors.push('Invalid end_date_time format');
         } else if (endTime <= startTime) {
-          errors.push('End time must be after start time');
+          errors.push('end_date_time must be after date_time');
         }
       }
-    }
-
-    if (!eventData.location && !eventData.venue_id) {
-      warnings.push('No venue or location specified');
     }
 
     return {
