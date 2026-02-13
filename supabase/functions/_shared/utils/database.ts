@@ -430,17 +430,17 @@ class DatabaseClient {
       }));
 
       const { error } = await this.supabase
-        .from('artist_genres')
-        .insert(links);
+        .from('artist_genre')
+        .upsert(links, { onConflict: 'artist_id,genre_id', ignoreDuplicates: true });
 
       const duration = timer();
       
       if (error) {
-        logger.logDbOperation('CREATE', 'artist_genres', false, 0, error);
+        logger.logDbOperation('UPSERT', 'artist_genre', false, 0, error);
         throw error;
       }
 
-      logger.logDbOperation('CREATE', 'artist_genres', true, genreIds.length);
+      logger.logDbOperation('UPSERT', 'artist_genre', true, genreIds.length);
     } catch (error) {
       timer();
       throw error;
@@ -525,6 +525,60 @@ class DatabaseClient {
 
       logger.logDbOperation('SELECT', 'genres', true, data ? 1 : 0);
       return data as Genre | null;
+    } catch (error) {
+      timer();
+      throw error;
+    }
+  }
+
+  // ===== GENRE QUERY OPERATIONS =====
+
+  async getAllGenres(): Promise<Genre[]> {
+    const timer = logger.startTimer('db_get_all_genres');
+    
+    try {
+      const { data, error } = await this.supabase
+        .from('genres')
+        .select('id, name, description, external_links');
+
+      const duration = timer();
+      
+      if (error) {
+        logger.logDbOperation('SELECT', 'genres', false, 0, error);
+        throw error;
+      }
+
+      logger.logDbOperation('SELECT', 'genres', true, data?.length || 0);
+      return (data || []) as Genre[];
+    } catch (error) {
+      timer();
+      throw error;
+    }
+  }
+
+  async linkEventGenres(eventId: number, genreIds: number[]): Promise<void> {
+    const timer = logger.startTimer('db_link_event_genres');
+    
+    try {
+      // Build upsert data — avoid duplicates with onConflict
+      const links = genreIds.map(genreId => ({
+        event_id: eventId,
+        genre_id: genreId
+      }));
+
+      const { error } = await this.supabase
+        .from('event_genre')
+        .upsert(links, { onConflict: 'event_id,genre_id', ignoreDuplicates: true });
+
+      const duration = timer();
+      
+      if (error) {
+        logger.logDbOperation('UPSERT', 'event_genre', false, 0, error);
+        throw error;
+      }
+
+      logger.logDbOperation('UPSERT', 'event_genre', true, genreIds.length);
+      logger.info(`Linked ${genreIds.length} genres to event ${eventId}`);
     } catch (error) {
       timer();
       throw error;

@@ -6,7 +6,7 @@ import { db } from '../utils/database.ts';
 import { logger } from '../utils/logger.ts';
 import { lastFmApi, soundCloudApi } from '../utils/api.ts';
 import { tokenManager } from '../utils/token.ts';
-import { BANNED_GENRES, MIN_GENRE_OCCURRENCE, MAX_GENRES_REGULAR, MAX_GENRES_FESTIVAL, FESTIVAL_FALLBACK_GENRES } from '../utils/constants.ts';
+import { BANNED_GENRES, BANNED_GENRES_SLUGS, MIN_GENRE_OCCURRENCE, MAX_GENRES_REGULAR, MAX_GENRES_FESTIVAL, FESTIVAL_FALLBACK_GENRES } from '../utils/constants.ts';
 import { Genre, Artist, GenreAssignmentResult, SoundCloudTrack } from '../types/index.ts';
 
 export interface GenreValidationResult {
@@ -200,10 +200,10 @@ export async function insertGenreIfNew(genreObject: {
   
   let duplicateGenre: Genre | undefined = undefined;
   
-  // Check by Last.fm URL first
+  // Check by Last.fm URL first (stored in external_links.lastfm.link)
   if (lastfmUrl) {
     duplicateGenre = existingGenres.find(g => 
-      g.metadata?.lastfm_url === lastfmUrl
+      g.external_links?.lastfm?.link === lastfmUrl
     );
   }
   
@@ -220,11 +220,11 @@ export async function insertGenreIfNew(genreObject: {
   }
   
   // Create new genre
-  const finalName = refineGenreName(name);
+  const finalName = refineGenreName(name).trim();
   const newGenreData: Omit<Genre, 'id' | 'created_at' | 'updated_at'> = {
     name: finalName,
     description,
-    metadata: lastfmUrl ? { lastfm_url: lastfmUrl } : undefined
+    external_links: lastfmUrl ? { lastfm: { link: lastfmUrl } } : undefined
   };
   
   const newGenre = await db.createGenre(newGenreData);
@@ -269,7 +269,8 @@ export function extractTagsFromTrack(track: SoundCloudTrack): string[] {
 export async function processArtistGenres(artistData: Partial<Artist>): Promise<ProcessedGenre[]> {
   const genresFound: ProcessedGenre[] = [];
   
-  if (!artistData.soundcloud_id) {
+  const soundcloudId = artistData.external_links?.soundcloud?.id;
+  if (!soundcloudId) {
     logger.debug(`No SoundCloud ID for "${artistData.name}"`);
     return genresFound;
   }
@@ -277,7 +278,7 @@ export async function processArtistGenres(artistData: Partial<Artist>): Promise<
   logger.info(`Processing genres for artist: ${artistData.name}`);
   
   // Fetch tracks from SoundCloud
-  const tracks = await fetchArtistTracks(artistData.soundcloud_id);
+  const tracks = await fetchArtistTracks(soundcloudId);
   logger.debug(`Found ${tracks.length} tracks for ${artistData.name}`);
   
   // Extract all tags from tracks
@@ -321,7 +322,7 @@ export async function processArtistGenres(artistData: Partial<Artist>): Promise<
     const validation = await verifyGenreWithLastFM(tag);
     if (validation.valid && validation.description) {
       const slug = slugifyGenre(validation.name!);
-      if (!BANNED_GENRES.includes(slug)) {
+      if (!BANNED_GENRES_SLUGS.has(slug)) {
         logger.debug(`Valid genre found: "${validation.name}"`);
         genresFound.push({
           name: validation.name,
@@ -350,9 +351,25 @@ export async function assignEventGenres(eventId: number, isFestival = false): Pr
   logger.info(`Assigning genres to event ${eventId} (festival: ${isFestival})`);
   
   try {
-    // Get event's timetable (artists)
-    const timetable = await db.getTimetableByEventId(eventId);
-    const artistIds = [...new Set(timetable.map(t => t.artist_id))];
+    // Get event's artists from event_artist table (like local script)
+    const { data: eventArtists, error: eaError } = await db.client
+      .from('event_artist')
+      .select('artist_id')
+      .eq('event_id', eventId);
+    if (eaError) throw eaError;
+
+    // Handle artist_id as array field (local DB schema stores it as int[])
+    let artistIds: number[] = [];
+    if (eventArtists) {
+      for (const ea of eventArtists) {
+        if (Array.isArray(ea.artist_id)) {
+          artistIds.push(...ea.artist_id.map(Number));
+        } else if (ea.artist_id) {
+          artistIds.push(Number(ea.artist_id));
+        }
+      }
+      artistIds = [...new Set(artistIds)];
+    }
     
     if (artistIds.length === 0) {
       logger.warn(`No artists found for event ${eventId}`);
@@ -369,10 +386,8 @@ export async function assignEventGenres(eventId: number, isFestival = false): Pr
     const genreCounts: { [genreId: number]: number } = {};
     
     for (const artistId of artistIds) {
-      // This would require a proper join query in a real implementation
-      // For now, we'll use a simplified approach
       const artistGenres = await db.client
-        .from('artist_genres')
+        .from('artist_genre')
         .select('genre_id')
         .eq('artist_id', artistId);
         
@@ -383,10 +398,10 @@ export async function assignEventGenres(eventId: number, isFestival = false): Pr
       }
     }
     
-    // Get banned genre IDs
+    // Get banned genre IDs (using pre-computed slugified set for correct comparison)
     const allGenres = await db.getAllGenres();
     const bannedGenreIds = allGenres
-      .filter(g => BANNED_GENRES.includes(slugifyGenre(g.name)))
+      .filter(g => BANNED_GENRES_SLUGS.has(slugifyGenre(g.name)))
       .map(g => g.id!);
     
     // Determine max genres based on festival status

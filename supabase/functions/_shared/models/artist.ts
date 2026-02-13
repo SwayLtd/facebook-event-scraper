@@ -160,6 +160,51 @@ export async function extractArtistInfo(artist: SoundCloudUser): Promise<Partial
 }
 
 /**
+ * Back-fills genres for an existing artist that has no artist_genre entries yet.
+ * Only runs if the artist has a SoundCloud ID.
+ */
+async function backfillArtistGenres(artist: Artist): Promise<void> {
+  if (!artist.id || !artist.external_links?.soundcloud?.id) return;
+
+  try {
+    // Check if artist already has genres
+    const { data: existingGenres, error } = await db.client
+      .from('artist_genre')
+      .select('genre_id')
+      .eq('artist_id', artist.id)
+      .limit(1);
+
+    if (error || (existingGenres && existingGenres.length > 0)) {
+      return; // Already has genres or error checking
+    }
+
+    logger.info(`Back-filling genres for existing artist "${artist.name}" (id=${artist.id})`);
+    const genres = await genreModel.processArtistGenres(artist);
+    const genreIds: number[] = [];
+
+    for (const genreObj of genres) {
+      if (genreObj.id) {
+        genreIds.push(genreObj.id);
+      } else if (genreObj.name && genreObj.description) {
+        const genreId = await genreModel.insertGenreIfNew({
+          name: genreObj.name,
+          description: genreObj.description,
+          lastfmUrl: genreObj.lastfmUrl
+        });
+        genreIds.push(genreId);
+      }
+    }
+
+    if (genreIds.length > 0) {
+      await db.linkArtistGenres(artist.id, genreIds);
+      logger.info(`Back-filled ${genreIds.length} genres for artist ${artist.id}`);
+    }
+  } catch (err) {
+    logger.warn(`Failed to back-fill genres for artist ${artist.id}`, err);
+  }
+}
+
+/**
  * Finds existing artist or inserts new one
  * @param artistObj - Artist object from parsing
  * @param enableGenreProcessing - Whether to process genres
@@ -204,6 +249,10 @@ export async function findOrInsertArtist(
     const existing = await db.getArtistBySoundCloudId(artistData.external_links.soundcloud.id);
     if (existing) {
       logger.info(`Artist exists by SoundCloud ID: "${artistName}" (id=${existing.id})`);
+      // Back-fill genres if missing
+      if (enableGenreProcessing) {
+        await backfillArtistGenres(existing);
+      }
       return existing.id!;
     }
   }
@@ -216,6 +265,10 @@ export async function findOrInsertArtist(
     );
     if (match) {
       logger.info(`Artist exists by name: "${artistName}" (id=${match.id})`);
+      // Back-fill genres if missing
+      if (enableGenreProcessing) {
+        await backfillArtistGenres(match);
+      }
       return match.id!;
     }
   }

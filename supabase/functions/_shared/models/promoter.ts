@@ -5,7 +5,7 @@ import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { db } from '../utils/database.ts';
 import { logger } from '../utils/logger.ts';
 import { normalizeNameEnhanced } from '../utils/name.ts';
-import { FUZZY_THRESHOLD, MIN_GENRE_OCCURRENCE, MAX_GENRES_REGULAR, MAX_GENRES_FESTIVAL } from '../utils/constants.ts';
+import { FUZZY_THRESHOLD, BANNED_GENRES_SLUGS, MIN_GENRE_OCCURRENCE, MAX_GENRES_REGULAR, MAX_GENRES_FESTIVAL } from '../utils/constants.ts';
 import { Promoter } from '../types/index.ts';
 
 // String similarity utility (simplified version)
@@ -441,6 +441,18 @@ export async function assignPromoterGenres(
   try {
     logger.info(`Assigning genres to promoter ${promoterId} (festival: ${isFestival})`);
 
+    // Auto-compute bannedGenreIds if not provided
+    if (bannedGenreIds.length === 0) {
+      const { data: allGenres, error: gError } = await db.client
+        .from('genres')
+        .select('id, name');
+      if (!gError && allGenres) {
+        bannedGenreIds = allGenres
+          .filter(g => BANNED_GENRES_SLUGS.has(g.name.replace(/\W/g, '').toLowerCase()))
+          .map(g => g.id);
+      }
+    }
+
     // 1) Get the promoter's events
     const { data: promoterEvents, error: peError } = await db.client
       .from('event_promoter')
@@ -503,32 +515,21 @@ export async function assignPromoterGenres(
       );
     }
 
-    // 5) Save promoter-genre relationships
-    for (const genreId of topGenreIds) {
-      try {
-        // Check if relationship already exists
-        const { data: existing } = await db.client
-          .from('promoter_genre')
-          .select('id')
-          .eq('promoter_id', promoterId)
-          .eq('genre_id', genreId)
-          .single();
+    // 5) Save promoter-genre relationships (upsert to avoid duplicates)
+    if (topGenreIds.length > 0) {
+      const links = topGenreIds.map(genreId => ({
+        promoter_id: promoterId,
+        genre_id: genreId
+      }));
 
-        if (!existing) {
-          // Insert new relationship
-          const { error: insertError } = await db.client
-            .from('promoter_genre')
-            .insert([{
-              promoter_id: promoterId,
-              genre_id: genreId
-            }]);
+      const { error: upsertError } = await db.client
+        .from('promoter_genre')
+        .upsert(links, { onConflict: 'promoter_id,genre_id', ignoreDuplicates: true });
 
-          if (insertError) {
-            logger.error('Error inserting promoter-genre relationship', insertError);
-          }
-        }
-      } catch (error) {
-        logger.error('Error managing promoter-genre relationship', error);
+      if (upsertError) {
+        logger.error('Error upserting promoter-genre relationships', upsertError);
+      } else {
+        logger.info(`Upserted ${topGenreIds.length} genre links for promoter ${promoterId}`);
       }
     }
 

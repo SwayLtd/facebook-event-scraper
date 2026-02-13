@@ -636,7 +636,7 @@ Deno.serve(async (req) => {
         
         for (const promoterId of promoterIds) {
           try {
-            await assignPromoterGenres(promoterId);
+            await assignPromoterGenres(promoterId, [], festivalDetection.isFestival);
             logger.info(`Genres assigned to promoter ${promoterId}`);
           } catch (promoterGenreError) {
             logger.error(`Failed to assign genres to promoter ${promoterId}`, promoterGenreError);
