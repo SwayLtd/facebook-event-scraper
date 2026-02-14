@@ -6,24 +6,24 @@ import { createClient } from '@supabase/supabase-js';
 import NodeGeocoder from 'node-geocoder';
 import OpenAI from 'openai';
 
-import { normalizeNameEnhanced, getNormalizedName } from './utils/name.js';
-import { logMessage } from './utils/logger.js';
-import { detectFestival, extractFestivalName } from './utils/festival-detection.js';
+import { normalizeNameEnhanced, getNormalizedName } from '../utils/name.js';
+import { logMessage } from '../utils/logger.js';
+import { detectFestival, extractFestivalName } from '../utils/festival-detection.js';
 import { getClashfinderTimetable } from './get_data/get_clashfinder_timetable.js';
 
 // Import extraction functions
 import { convertClashfinderToJSON } from './extract_events_timetable.js';
 
 // Import models
-import artistModel from './models/artist.js';
-import genreModel from './models/genre.js';
-import promoterModel from './models/promoter.js';
-import venueModel from './models/venue.js';
-import timetableModel from './models/timetable.js';
+import artistModel from '../models/artist.js';
+import genreModel from '../models/genre.js';
+import promoterModel from '../models/promoter.js';
+import venueModel from '../models/venue.js';
+import timetableModel from '../models/timetable.js';
 
 // Import utility functions
-import geoUtils from './utils/geo.js';
-import databaseUtils from './utils/database.js';
+import geoUtils from '../utils/geo.js';
+import databaseUtils from '../utils/database.js';
 
 // --- Global Parameters ---
 const DRY_RUN = false; // Set true for dry-run mode (no DB writes)

@@ -21,20 +21,20 @@ import process from 'node:process';
 import { createClient } from '@supabase/supabase-js';
 
 // Import utility functions
-import { delay } from './utils/delay.js';
-import { getAccessToken } from './utils/token.js';
-import { logMessage } from './utils/logger.js';
-import { toUtcIso } from './utils/date.js';
+import { delay } from '../utils/delay.js';
+import { getAccessToken } from '../utils/token.js';
+import { logMessage } from '../utils/logger.js';
+import { toUtcIso } from '../utils/date.js';
 
 // Import model functions
-import artistModel from './models/artist.js';
-import { findEvent, updateEventMetadata, linkArtistsToEvent } from './models/event.js';
+import artistModel from '../models/artist.js';
+import { findEvent, updateEventMetadata, linkArtistsToEvent } from '../models/event.js';
 import {
     groupPerformancesForB2B,
     extractStagesAndDaysFromPerformances,
     generateTimetableStatistics,
     logTimetableStatistics
-} from './models/timetable.js';
+} from '../models/timetable.js';
 
 // --- Configuration ---
 const DRY_RUN = process.env.DRY_RUN === 'true';
