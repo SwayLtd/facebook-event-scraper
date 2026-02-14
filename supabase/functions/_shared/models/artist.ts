@@ -8,28 +8,37 @@ import { soundCloudApi, openAiApi } from '../utils/api.ts';
 import { tokenManager } from '../utils/token.ts';
 import { normalizeNameEnhanced, cleanArtistName, areNamesSimilar } from '../utils/name.ts';
 import { enrichArtistData, applyEnrichmentToArtist } from '../utils/enrichment.ts';
+import { normalizeExternalLinks } from '../utils/social.ts';
 import { withRetry } from '../utils/retry.ts';
 import genreModel from './genre.ts';
 import { Artist, SoundCloudUser, SoundCloudTrack, EnrichmentResult } from '../types/index.ts';
 
-// String similarity utility (simplified version)
+// String similarity utility (Dice coefficient with proper bigram counting)
 function compareTwoStrings(first: string, second: string): number {
-  const firstBigrams = new Set();
-  const secondBigrams = new Set();
-  
+  first = first.replace(/\s+/g, '');
+  second = second.replace(/\s+/g, '');
+
+  if (first === second) return 1;
+  if (first.length < 2 || second.length < 2) return 0;
+
+  const firstBigrams = new Map<string, number>();
   for (let i = 0; i < first.length - 1; i++) {
-    firstBigrams.add(first.substring(i, i + 2));
+    const bigram = first.substring(i, i + 2);
+    const count = firstBigrams.has(bigram) ? firstBigrams.get(bigram)! + 1 : 1;
+    firstBigrams.set(bigram, count);
   }
-  
+
+  let intersectionSize = 0;
   for (let i = 0; i < second.length - 1; i++) {
-    secondBigrams.add(second.substring(i, i + 2));
+    const bigram = second.substring(i, i + 2);
+    const count = firstBigrams.has(bigram) ? firstBigrams.get(bigram)! : 0;
+    if (count > 0) {
+      firstBigrams.set(bigram, count - 1);
+      intersectionSize++;
+    }
   }
-  
-  const intersection = [...firstBigrams].filter(x => secondBigrams.has(x)).length;
-  const union = firstBigrams.size + secondBigrams.size;
-  
-  if (union === 0) return 0;
-  return (2 * intersection) / union;
+
+  return (2.0 * intersectionSize) / (first.length + second.length - 2);
 }
 
 export interface ParsedArtist {
@@ -242,6 +251,11 @@ export async function findOrInsertArtist(
         ? { soundcloud: { link: artistObj.soundcloud } }
         : undefined,
     };
+  }
+
+  // Normalize external links before duplicate detection
+  if (artistData.external_links) {
+    artistData.external_links = normalizeExternalLinks(artistData.external_links) ?? undefined;
   }
 
   // Check for duplicates via SoundCloud ID
@@ -571,13 +585,12 @@ Additional Instructions:
                   start_time: artistObj.time || null,
                   end_time: null
                 });
-                logger.info(`Created event_artist relation for "${artistObj.name}" (ID: ${artistResult})`, {
-                  stage: artistObj.stage || null,
-                  time: artistObj.time || null
-                });
-              } catch (relError) {
-                logger.error(`Error creating event_artist relation for "${artistObj.name}"`, relError);
+                logger.info(`Created event_artist relation for "${artistObj.name}" (ID: ${artistResult})`);
+              } catch (relError: any) {
+                logger.error(`Error creating event_artist relation for "${artistObj.name}": ${relError?.message || relError}`);
               }
+            } else {
+              logger.warn(`artistResult is not a number for "${artistObj.name}": type=${typeof artistResult}`);
             }
           }
         } catch (error) {

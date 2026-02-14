@@ -135,7 +135,7 @@ export async function linkArtistsToEvent(
       return { id: `dryrun_link_${artistIds.join('_')}_${eventId}` };
     }
     
-    const artistIdStrs = artistIds.map(String);
+    const artistIdNums = artistIds.map(Number);
     
     // Validate and clean timestamps using utility function
     let startTime: string | null = null;
@@ -153,18 +153,18 @@ export async function linkArtistsToEvent(
       stage: performanceData.stage,
       start_time: startTime,
       end_time: endTime,
-      artist_ids: artistIdStrs
+      artist_ids: artistIdNums
     });
     
     if (existingLinks.length > 0) {
-      logger.info(`Artist-event link already exists for artist_ids=${artistIdStrs.join(',')} with same performance details`);
+      logger.info(`Artist-event link already exists for artist_ids=${artistIdNums.join(',')} with same performance details`);
       return existingLinks[0];
     }
     
     // Create new link with format compatible with existing system
     const linkRecord = {
       event_id: eventId,
-      artist_id: artistIdStrs, // Array format for multiple artists (B2B)
+      artist_id: artistIdNums, // Integer array for multiple artists (B2B)
       start_time: startTime,
       end_time: endTime,
       status: 'confirmed',
@@ -173,7 +173,7 @@ export async function linkArtistsToEvent(
     };
     
     const createdLink = await db.createEventArtistLink(linkRecord);
-    logger.info(`Created artist-event link for artist_ids=${artistIdStrs.join(',')} (ID: ${createdLink.id})`);
+    logger.info(`Created artist-event link for artist_ids=${artistIdNums.join(',')} (ID: ${createdLink.id})`);
     
     return createdLink;
     

@@ -220,7 +220,7 @@ class DatabaseClient {
   
   async createEventArtistLink(linkData: {
     event_id: number;
-    artist_id: string | string[];
+    artist_id: number | number[];
     start_time?: string | null;
     end_time?: string | null;
     status?: string;
@@ -258,7 +258,7 @@ class DatabaseClient {
     stage?: string | null;
     start_time?: string | null;
     end_time?: string | null;
-    artist_ids?: string[];
+    artist_ids?: number[];
   }): Promise<any[]> {
     const timer = logger.startTimer('db_get_event_artist_links');
     
@@ -606,6 +606,9 @@ class DatabaseClient {
         existingRelations.forEach((rel: any) => {
           if (rel.artist_id && Array.isArray(rel.artist_id)) {
             rel.artist_id.forEach((id: any) => existingArtistIds.add(Number(id)));
+          } else if (rel.artist_id) {
+            // artist_id might be a single value in some cases
+            existingArtistIds.add(Number(rel.artist_id));
           }
         });
       }
@@ -625,13 +628,19 @@ class DatabaseClient {
       const relationPromises = newArtistIds.map(artistId => {
         const relationData: any = {
           event_id: eventId,
-          artist_id: [String(artistId)], // Array with single ID as string, matching local system behavior
+          artist_id: [artistId], // Array with single integer ID, matching DB schema (integer[])
           status: 'confirmed',
           stage: performanceData?.stage || null,
-          start_time: performanceData?.start_time || null,
-          end_time: performanceData?.end_time || null,
           custom_name: null
         };
+
+        // Only include start_time/end_time if they are valid ISO timestamps
+        if (performanceData?.start_time && performanceData.start_time.includes('T')) {
+          relationData.start_time = performanceData.start_time;
+        }
+        if (performanceData?.end_time && performanceData.end_time.includes('T')) {
+          relationData.end_time = performanceData.end_time;
+        }
 
         return this.supabase
           .from('event_artist')

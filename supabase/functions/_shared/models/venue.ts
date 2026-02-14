@@ -181,19 +181,6 @@ export async function createOrUpdateVenue(
   try {
     logger.info(`Processing venue: ${venueData.name}`);
 
-    // CRITICAL DEBUG: Log exactly what we have
-    console.error('=== VENUE DEBUG START ===');
-    console.error('venueData properties:', {
-      name: venueData.name,
-      address: venueData.address,
-      addressType: typeof venueData.address,
-      addressLength: venueData.address?.length,
-      city: venueData.city,
-      country: venueData.country,
-      hasAddress: !!venueData.address
-    });
-    console.error('=== VENUE DEBUG END ===');
-
     if (dryRun) {
       logger.info(`[DRY_RUN] Would have created/updated venue: ${venueData.name}`);
       return { 
@@ -202,18 +189,14 @@ export async function createOrUpdateVenue(
       } as Venue;
     }
 
-    // Check if venue already exists with the same logic as local script
-    logger.info(`Processing venue: ${venueData.name}`);
     const normalizedVenueName = getNormalizedName(venueData.name);
     
     // Step 1: Try to match by address using ORIGINAL address first (like local system)
-    console.error('STEP 1 CHECK:', { hasAddress: !!venueData.address, address: venueData.address });
     if (venueData.address) {
-      console.error('STEP 1: Entering address-based matching');
       // Clean the address of potential whitespace/control characters
       const cleanAddress = venueData.address.trim().replace(/[\r\n\t]/g, ' ').replace(/\s+/g, ' ');
       
-      logger.info(`VENUE MATCHING DEBUG: Step 1 - Trying address match with: "${cleanAddress}"`);
+      logger.info(`Step 1 - Trying address match with: "${cleanAddress}"`);
       
       // Try exact match first with location field
       const { data: venuesByAddress, error: addrError } = await db.client
@@ -223,11 +206,11 @@ export async function createOrUpdateVenue(
         .order('id', { ascending: true }); // Take the oldest venue (smallest ID)
 
       if (addrError) {
-        logger.error(`VENUE MATCHING DEBUG: Location query error:`, addrError);
+        logger.error(`Location query error:`, addrError);
         throw addrError;
       }
 
-      logger.info(`VENUE MATCHING DEBUG: Location query returned ${venuesByAddress?.length || 0} venues`);
+      logger.info(`Location query returned ${venuesByAddress?.length || 0} venues`);
       
       if (venuesByAddress && venuesByAddress.length > 0) {
         logger.info(`Found existing venue by exact location match: "${cleanAddress}" (ID: ${venuesByAddress[0].id})`);
@@ -242,13 +225,13 @@ export async function createOrUpdateVenue(
         .order('id', { ascending: true }); // Take the oldest venue (smallest ID)
 
       if (formattedAddrError) {
-        logger.error(`VENUE MATCHING DEBUG: Formatted address query error:`, formattedAddrError);
+        logger.error(`Formatted address query error:`, formattedAddrError);
         throw formattedAddrError;
       }
 
-      logger.info(`VENUE MATCHING DEBUG: Formatted address query returned ${venuesByFormattedAddr?.length || 0} venues`);
+      logger.info(`Formatted address query returned ${venuesByFormattedAddr?.length || 0} venues`);
       if (venuesByFormattedAddr && venuesByFormattedAddr.length > 0) {
-        logger.info(`VENUE MATCHING DEBUG: First venue found:`, { 
+        logger.info(`First venue found:`, { 
           id: venuesByFormattedAddr[0].id, 
           name: venuesByFormattedAddr[0].name,
           location: venuesByFormattedAddr[0].location 
@@ -277,9 +260,7 @@ export async function createOrUpdateVenue(
 
     // Step 1.5: If no explicit address provided, try using the venue name as an address
     // This handles Facebook events that provide address as venue name
-    console.error('STEP 1.5 CHECK:', { hasAddress: !!venueData.address, venueName: venueData.name });
     if (!venueData.address && venueData.name) {
-      console.error('STEP 1.5: Trying venue name as address');
       
       // Check if the venue name looks like an address (contains street number or common address patterns)
       const nameAsAddress = venueData.name.trim().replace(/[\r\n\t]/g, ' ').replace(/\s+/g, ' ');
@@ -287,10 +268,8 @@ export async function createOrUpdateVenue(
                                /\d+\s+[A-Za-z]/.test(nameAsAddress) || // Number + space + letters
                                /rue|street|avenue|boulevard|straat|laan/i.test(nameAsAddress); // Address keywords
       
-      console.error('STEP 1.5:', { nameAsAddress, looksLikeAddress });
-      
       if (looksLikeAddress) {
-        logger.info(`VENUE MATCHING DEBUG: Step 1.5 - Trying name as address: "${nameAsAddress}"`);
+        logger.info(`Step 1.5 - Trying name as address: "${nameAsAddress}"`);
         
         // Try exact match with formatted_address from geo field
         const { data: venuesByNameAsAddr, error: nameAsAddrError } = await db.client
@@ -300,13 +279,12 @@ export async function createOrUpdateVenue(
           .order('id', { ascending: true }); // Take the oldest venue (smallest ID)
 
         if (nameAsAddrError) {
-          logger.error(`VENUE MATCHING DEBUG: Name-as-address query error:`, nameAsAddrError);
+          logger.error(`Name-as-address query error:`, nameAsAddrError);
         } else {
-          logger.info(`VENUE MATCHING DEBUG: Name-as-address query returned ${venuesByNameAsAddr?.length || 0} venues`);
+          logger.info(`Name-as-address query returned ${venuesByNameAsAddr?.length || 0} venues`);
           
           if (venuesByNameAsAddr && venuesByNameAsAddr.length > 0) {
             logger.info(`Found existing venue using name as address: "${nameAsAddress}" (ID: ${venuesByNameAsAddr[0].id})`);
-            console.error(`STEP 1.5 SUCCESS: Found venue ${venuesByNameAsAddr[0].id} using name as address`);
             return venuesByNameAsAddr[0] as Venue;
           }
         }
@@ -319,13 +297,12 @@ export async function createOrUpdateVenue(
           .order('id', { ascending: true }); // Take the oldest venue (smallest ID)
 
         if (nameAsLocationError) {
-          logger.error(`VENUE MATCHING DEBUG: Name-as-location query error:`, nameAsLocationError);
+          logger.error(`Name-as-location query error:`, nameAsLocationError);
         } else {
-          logger.info(`VENUE MATCHING DEBUG: Name-as-location query returned ${venuesByNameAsLocation?.length || 0} venues`);
+          logger.info(`Name-as-location query returned ${venuesByNameAsLocation?.length || 0} venues`);
           
           if (venuesByNameAsLocation && venuesByNameAsLocation.length > 0) {
             logger.info(`Found existing venue using name as location: "${nameAsAddress}" (ID: ${venuesByNameAsLocation[0].id})`);
-            console.error(`STEP 1.5 SUCCESS: Found venue ${venuesByNameAsLocation[0].id} using name as location`);
             return venuesByNameAsLocation[0] as Venue;
           }
         }
@@ -339,8 +316,7 @@ export async function createOrUpdateVenue(
           const streetNumber = streetNumberMatch[1];
           const postalCode = postalCodeMatch[1];
           
-          logger.info(`VENUE MATCHING DEBUG: Trying fuzzy address match with number ${streetNumber} and postal ${postalCode}`);
-          console.error(`STEP 1.5 FUZZY: Searching for venues with number ${streetNumber} and postal ${postalCode}`);
+          logger.info(`Trying fuzzy address match with number ${streetNumber} and postal ${postalCode}`);
           
           const { data: fuzzyVenues, error: fuzzyError } = await db.client
             .from('venues')
@@ -349,14 +325,11 @@ export async function createOrUpdateVenue(
             .order('id', { ascending: true }); // Take the oldest venue (smallest ID)
 
           if (fuzzyError) {
-            logger.error(`VENUE MATCHING DEBUG: Fuzzy address query error:`, fuzzyError);
+            logger.error(`Fuzzy address query error:`, fuzzyError);
           } else {
-            logger.info(`VENUE MATCHING DEBUG: Fuzzy address query returned ${fuzzyVenues?.length || 0} venues`);
-            console.error(`STEP 1.5 FUZZY: Found ${fuzzyVenues?.length || 0} venues with fuzzy match`);
-            
+            logger.info(`Fuzzy address query returned ${fuzzyVenues?.length || 0} venues`);
             if (fuzzyVenues && fuzzyVenues.length > 0) {
               logger.info(`Found existing venue using fuzzy address match: "${nameAsAddress}" -> "${fuzzyVenues[0].name}" (ID: ${fuzzyVenues[0].id})`);
-              console.error(`STEP 1.5 FUZZY SUCCESS: Found venue ${fuzzyVenues[0].id} (${fuzzyVenues[0].name}) using fuzzy address match`);
               return fuzzyVenues[0] as Venue;
             }
           }

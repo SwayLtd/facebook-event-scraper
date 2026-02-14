@@ -155,8 +155,8 @@ export async function verifyGenreWithLastFM(tagName: string): Promise<GenreValid
     const isElectronicMusic = /electronic|dance|techno|house|trance|drum|bass/.test(lowerDesc);
     const isUmbrella = /umbrella term/.test(lowerDesc);
     
-    // Accept if it's an umbrella term OR has music-related keywords OR mentions electronic music
-    if (!isUmbrella && !(hasGenreWord || hasMusicPhrase || isElectronicMusic)) {
+    // Reject umbrella terms AND non-music descriptions (aligned with local logic)
+    if (isUmbrella || !(hasGenreWord || hasMusicPhrase || isElectronicMusic)) {
       return { valid: false };
     }
     

@@ -27,12 +27,24 @@ import { BANNED_GENRES } from '../_shared/utils/constants.ts';
 // Import du modèle artist pour le traitement simplifié
 import { processSimpleEventArtists } from '../_shared/models/artist.ts';
 
+// Import du modèle timetable pour le traitement festival
+import timetableModel from '../_shared/models/timetable.ts';
+
+// Import de la détection festival (extractFestivalName)
+import { extractFestivalName } from '../_shared/utils/festival-detection.ts';
+
 // Import des modèles pour le traitement complet des venues et promoters
-import { createOrUpdateVenue } from '../_shared/models/venue.ts';
+import { createOrUpdateVenue, fetchAddressFromGoogle } from '../_shared/models/venue.ts';
 import { findOrInsertPromoter, assignPromoterGenres } from '../_shared/models/promoter.ts';
+
+// Import des utilitaires géo pour la validation haversine
+import { haversineDistance, fetchAddressFromNominatim } from '../_shared/utils/geo.ts';
 
 // Import du modèle genre pour l'assignement
 import { assignEventGenres } from '../_shared/models/genre.ts';
+
+// Import des utilitaires de noms
+import { normalizeNameEnhanced } from '../_shared/utils/name.ts';
 
 // Facebook scraper import
 import { scrapeFbEvent } from 'npm:facebook-event-scraper';
@@ -40,29 +52,48 @@ import { scrapeFbEvent } from 'npm:facebook-event-scraper';
 // Constantes
 const FESTIVAL_KEYWORDS = ['festival', 'fest', 'open air', 'openair', 'gathering'];
 const MIN_FESTIVAL_DURATION_HOURS = 24;
-const FUZZY_THRESHOLD = 0.85;
+// Known festival names for detection (case-insensitive) — same list as local script + additions
+const KNOWN_FESTIVALS = [
+  'let it roll', 'tomorrowland', 'ultra', 'coachella', 'burning man',
+  'glastonbury', 'lollapalooza', 'bonnaroo', 'electric daisy carnival',
+  'edc', 'defqon', 'qlimax', 'mysteryland', 'awakenings', 'dour',
+  'rock werchter', 'pukkelpop', 'graspop', 'rampage', 'rampage open air',
+  'nature one', 'love parade', 'fusion', 'boom festival', 'ozora',
+  'psytrance', 'hadra', 'antaris', 'voov', 'garbicz', 'fusion festival',
+  'timewarp', 'time warp', 'sonar', 'movement', 'dekmantel', 'kappa futur',
+  'awakenings festival', 'dour festival', 'rampage weekend'
+];
+// FUZZY_THRESHOLD is imported from _shared/utils/constants.ts (0.75) — no local override
 
 /**
- * String similarity utility (réplique de process-event)
+ * String similarity utility (Dice coefficient with proper bigram counting)
  */
 const stringSimilarity = {
   compareTwoStrings: (str1: string, str2: string): number => {
+    str1 = str1.replace(/\s+/g, '');
+    str2 = str2.replace(/\s+/g, '');
+
     if (str1 === str2) return 1.0;
     if (str1.length < 2 || str2.length < 2) return 0.0;
-    
-    const bigrams1 = new Set<string>();
-    const bigrams2 = new Set<string>();
-    
+
+    const firstBigrams = new Map<string, number>();
     for (let i = 0; i < str1.length - 1; i++) {
-      bigrams1.add(str1.substring(i, i + 2));
+      const bigram = str1.substring(i, i + 2);
+      const count = firstBigrams.has(bigram) ? firstBigrams.get(bigram)! + 1 : 1;
+      firstBigrams.set(bigram, count);
     }
-    
+
+    let intersectionSize = 0;
     for (let i = 0; i < str2.length - 1; i++) {
-      bigrams2.add(str2.substring(i, i + 2));
+      const bigram = str2.substring(i, i + 2);
+      const count = firstBigrams.has(bigram) ? firstBigrams.get(bigram)! : 0;
+      if (count > 0) {
+        firstBigrams.set(bigram, count - 1);
+        intersectionSize++;
+      }
     }
-    
-    const intersection = new Set([...bigrams1].filter(x => bigrams2.has(x)));
-    return (2.0 * intersection.size) / (bigrams1.size + bigrams2.size);
+
+    return (2.0 * intersectionSize) / (str1.length + str2.length - 2);
   }
 };
 
@@ -104,13 +135,24 @@ function detectFestival(eventData: any, options: { forceFestival?: boolean } = {
     }
   }
 
-  // Vérification des mots-clés festival
+  // Vérification des festivals connus par nom
   const name = eventData.name?.toLowerCase() || '';
-  for (const keyword of FESTIVAL_KEYWORDS) {
-    if (name.includes(keyword.toLowerCase())) {
-      confidence += 30;
-      reasons.push(`Name contains "${keyword}"`);
+  for (const knownName of KNOWN_FESTIVALS) {
+    if (name.includes(knownName)) {
+      confidence += 60;
+      reasons.push(`Known festival: "${knownName}"`);
       break;
+    }
+  }
+
+  // Vérification des mots-clés festival génériques
+  if (confidence < 60) {
+    for (const keyword of FESTIVAL_KEYWORDS) {
+      if (name.includes(keyword.toLowerCase())) {
+        confidence += 30;
+        reasons.push(`Name contains "${keyword}"`);
+        break;
+      }
     }
   }
 
@@ -416,23 +458,87 @@ Deno.serve(async (req) => {
 
     // === TRAITEMENT ARTISTES avec _shared/ ===
     let totalArtists = 0;
-    if (!skipArtists && eventDescription && eventDbId) {
+    let importStrategy = 'simple';
+    if (!skipArtists && eventDbId) {
       try {
-        logger.info('Processing artists with _shared/ model', {
-          skipArtists,
-          hasDescription: !!eventDescription,
-          eventDbId,
-          descriptionLength: eventDescription?.length
-        });
-        
         // Test API key availability
         const hasOpenAiKey = !!Deno.env.get('OPENAI_API_KEY');
         logger.info('API Key availability check', { hasOpenAiKey });
-        
-        const artistIds = await processSimpleEventArtists(eventDbId, eventDescription, false);
-        totalArtists = artistIds.length;
-        logger.info(`Artists processed successfully: ${totalArtists} artists`, { artistIds });
-      } catch (artistError) {
+
+        // Determine import strategy based on festival detection
+        if (festivalDetection.isFestival) {
+          importStrategy = 'festival';
+          const durationText = festivalDetection.duration
+            ? `${festivalDetection.duration.hours.toFixed(1)}h`
+            : 'unknown duration';
+          logger.info(`Event detected as FESTIVAL (${durationText}) - will attempt timetable import`);
+
+          // Try to get timetable from Clashfinder
+          const festivalName = extractFestivalName(eventData.name);
+          if (festivalName) {
+            logger.info(`Searching Clashfinder for festival: "${festivalName}"`);
+            try {
+              const clashfinderResult = await timetableModel.getClashfinderTimetable(eventData.name, {
+                saveFile: false,
+                silent: true,
+                minSimilarity: 70
+              });
+              logger.info(`Found Clashfinder data for: ${clashfinderResult.festival.name} (similarity: ${clashfinderResult.similarity}%)`);
+
+              // Year validation
+              const eventYear = eventData.name.match(/\b(20\d{2})\b/)?.[1];
+              const timetableId = clashfinderResult.festival.id;
+              let timetableYear = timetableId.match(/\b(20\d{2})\b/)?.[1];
+              if (!timetableYear && timetableId.match(/\w+(\d{2})$/)) {
+                const shortYear = timetableId.match(/\w+(\d{2})$/)?.[1] || '';
+                timetableYear = parseInt(shortYear) > 50 ? `19${shortYear}` : `20${shortYear}`;
+              }
+
+              if (eventYear && timetableYear && eventYear !== timetableYear) {
+                logger.warn(`Rejecting timetable from ${timetableYear} for ${eventYear} event - year mismatch`);
+                importStrategy = 'simple_fallback';
+              } else {
+                // Convert CSV to timetable data
+                const timetableData = timetableModel.convertClashfinderCSV(clashfinderResult.csv);
+                logger.info(`Converted CSV to timetable: ${timetableData.length} performances`);
+
+                if (timetableData.length > 0) {
+                  // Process festival timetable
+                  const festivalResult = await timetableModel.processFestivalTimetable(
+                    eventDbId,
+                    timetableData,
+                    clashfinderResult
+                  );
+                  totalArtists = festivalResult?.artistCount || 0;
+                  logger.info(`Festival timetable processed: ${totalArtists} artists`, festivalResult);
+                } else {
+                  logger.warn('No performances found in Clashfinder CSV, falling back to simple import');
+                  importStrategy = 'simple_fallback';
+                }
+              }
+            } catch (clashfinderError: any) {
+              logger.warn(`Clashfinder lookup failed: ${clashfinderError.message}`);
+              importStrategy = 'simple_fallback';
+            }
+          } else {
+            logger.warn('Could not extract festival name for Clashfinder search');
+            importStrategy = 'simple_fallback';
+          }
+        }
+
+        // Simple event path (or festival fallback)
+        if (importStrategy !== 'festival' && eventDescription) {
+          logger.info('Processing artists with simple/OpenAI model', {
+            strategy: importStrategy,
+            descriptionLength: eventDescription?.length
+          });
+          const artistIds = await processSimpleEventArtists(eventDbId, eventDescription, false);
+          totalArtists = artistIds.length;
+          logger.info(`Artists processed successfully: ${totalArtists} artists`, { artistIds });
+        } else if (!eventDescription && importStrategy !== 'festival') {
+          logger.warn('No event description available for artist extraction');
+        }
+      } catch (artistError: any) {
         logger.error('Artist processing failed', {
           error: artistError,
           message: artistError?.message,
@@ -505,13 +611,68 @@ Deno.serve(async (req) => {
           ? eventData.location.country?.name
           : eventData.location.country;
           
+        // === GOOGLE MAPS ADDRESS PRE-FILL (like local script) ===
+        const venueName = eventData.location.name || 'Unknown Venue';
+        let venueAddress: string | undefined = eventData.location.address || undefined;
+        const venueLatitude = eventData.location.coordinates?.latitude ?? null;
+        const venueLongitude = eventData.location.coordinates?.longitude ?? null;
+
+        if (!venueAddress && venueName && venueName !== 'Unknown Venue') {
+          logger.info(`No address from Facebook for venue "${venueName}". Querying Google Maps...`);
+          try {
+            const googleResult = await fetchAddressFromGoogle(venueName, {});
+            if (googleResult) {
+              const googleLat = googleResult.geometry?.location?.lat;
+              const googleLng = googleResult.geometry?.location?.lng;
+              if (venueLatitude && venueLongitude && googleLat && googleLng) {
+                const distance = haversineDistance(venueLatitude, venueLongitude, googleLat, googleLng);
+                logger.info(`Distance between FB and Google coordinates: ${distance.toFixed(2)} meters`);
+                // Different thresholds for festivals vs regular events
+                const threshold = festivalDetection.isFestival ? 5000 : 500;
+                if (distance < threshold) {
+                  venueAddress = googleResult.formatted_address;
+                  logger.info(`Using Google address (distance ${distance.toFixed(0)}m < ${threshold}m): ${venueAddress}`);
+                } else {
+                  logger.warn(`Google address too far from FB coordinates (${distance.toFixed(0)}m > ${threshold}m), skipping`);
+                }
+              } else {
+                // No FB coordinates to validate against — accept Google address
+                venueAddress = googleResult.formatted_address;
+                logger.info(`Using Google address (no FB coordinates to validate): ${venueAddress}`);
+              }
+            }
+          } catch (googleError: any) {
+            logger.warn(`Google address lookup failed: ${googleError.message}`);
+          }
+
+          // Nominatim fallback if still no address and we have FB coordinates
+          if (!venueAddress && venueLatitude && venueLongitude) {
+            logger.info(`No address from Google. Trying Nominatim reverse geocoding for ${venueLatitude}, ${venueLongitude}...`);
+            try {
+              const nominatimResult = await fetchAddressFromNominatim(venueLatitude, venueLongitude);
+              if (nominatimResult?.display_name) {
+                venueAddress = nominatimResult.display_name;
+                logger.info(`Using Nominatim address: ${venueAddress}`);
+              }
+            } catch (nominatimError: any) {
+              logger.warn(`Nominatim lookup failed: ${nominatimError.message}`);
+            }
+          }
+
+          // Last resort: use venue name as address
+          if (!venueAddress) {
+            logger.warn(`No address found via Google Maps or Nominatim; using venue name "${venueName}" as address`);
+            venueAddress = venueName;
+          }
+        }
+
         const venueDataToProcess = {
-          name: eventData.location.name || 'Unknown Venue',
-          address: eventData.location.address || undefined,
+          name: venueName,
+          address: venueAddress,
           city: cityStr || undefined,
           country: countryStr || undefined
         };
-        logger.info('VENUE DEBUG: Exact data passed to createOrUpdateVenue:', venueDataToProcess);
+        logger.info('Venue data passed to createOrUpdateVenue:', venueDataToProcess);
         
         try {
           const venue = await createOrUpdateVenue(venueDataToProcess, {}, false); // pas de dry run
@@ -519,7 +680,7 @@ Deno.serve(async (req) => {
           if (venue && venue.id) {
             venueId = venue.id;
             logger.info(`Venue processed successfully: ${venue.id} (${venue.name})`);
-            logger.info('VENUE DEBUG: Final venue result:', { id: venue.id, name: venue.name });
+
             
             // Créer la relation event-venue dans la table event_venue
             const { error: relationError } = await supabase
@@ -598,8 +759,8 @@ Deno.serve(async (req) => {
       // Créer les relations venue-promoter UNIQUEMENT quand le nom du promoteur correspond au nom du venue
       // (comme dans le script local — un venue est lié à un promoteur seulement si c'est le même établissement)
       if (venueId && promoterIds.length > 0 && eventData.location?.name) {
-        const venueName = (eventData.location.name || '').toLowerCase().trim();
-        logger.info(`Checking venue-promoter relations: venue "${venueName}" vs ${promoterIds.length} promoters`);
+        const venueNameNorm = normalizeNameEnhanced(eventData.location.name || '').toLowerCase();
+        logger.info(`Checking venue-promoter relations: venue "${venueNameNorm}" vs ${promoterIds.length} promoters`);
         
         // Get promoter names to compare with venue name
         const { data: promoterData } = await supabase
@@ -609,8 +770,8 @@ Deno.serve(async (req) => {
         
         if (promoterData) {
           for (const promoter of promoterData) {
-            const promoterName = (promoter.name || '').toLowerCase().trim();
-            if (promoterName === venueName) {
+            const promoterNameNorm = normalizeNameEnhanced(promoter.name || '').toLowerCase();
+            if (promoterNameNorm === venueNameNorm) {
               try {
                 const { error: vpRelationError } = await supabase
                   .from('venue_promoter')
@@ -672,7 +833,7 @@ Deno.serve(async (req) => {
       success: true,
       eventId: eventDbId,
       eventName: eventName,
-      importStrategy: festivalDetection.isFestival ? 'festival' : 'simple',
+      importStrategy: importStrategy,
       isFestival: festivalDetection.isFestival,
       artistsProcessed: totalArtists,
       promotersProcessed: promoterIds.length,
