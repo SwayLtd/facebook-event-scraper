@@ -128,31 +128,48 @@ export async function makeApiCall<T = any>(url: string, options: ApiRequestOptio
 }
 
 /**
- * SoundCloud API call wrapper
+ * SoundCloud API call wrapper with automatic token refresh on 401
  * @param endpoint - SoundCloud API endpoint (without base URL)
  * @param options - Request options
  * @returns Promise with API response
  */
 export async function soundCloudApi<T = any>(endpoint: string, options: Omit<ApiRequestOptions, 'requiresAuth' | 'authToken'> = {}): Promise<ApiResponse<T>> {
-  const token = await tokenManager.getSoundCloudToken();
-  if (!token) {
-    return {
-      success: false,
-      error: 'SoundCloud access token not available'
+  // Attempt with current token, retry once with fresh token on 401
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const token = await tokenManager.getSoundCloudToken();
+    if (!token) {
+      return {
+        success: false,
+        error: 'SoundCloud access token not available (check SOUND_CLOUD_CLIENT_ID and SOUND_CLOUD_CLIENT_SECRET env vars)'
+      };
+    }
+
+    const url = `${API_ENDPOINTS.SOUNDCLOUD_BASE}${endpoint}`;
+    const authHeaders = {
+      'Authorization': `Bearer ${token}`,
+      ...options.headers
     };
+
+    const result = await makeApiCall<T>(url, {
+      ...options,
+      headers: authHeaders,
+      timeout: TIMEOUTS.SOUNDCLOUD_MS
+    });
+
+    // If 401, invalidate token and retry with a fresh one
+    if (!result.success && result.status === 401 && attempt === 0) {
+      logger.warn('SoundCloud API returned 401 - invalidating token and retrying with fresh token');
+      await tokenManager.invalidateToken('soundcloud');
+      continue;
+    }
+
+    return result;
   }
 
-  const url = `${API_ENDPOINTS.SOUNDCLOUD_BASE}${endpoint}`;
-  const authHeaders = {
-    'Authorization': `Bearer ${token}`,
-    ...options.headers
+  return {
+    success: false,
+    error: 'SoundCloud API call failed after token refresh retry'
   };
-
-  return makeApiCall<T>(url, {
-    ...options,
-    headers: authHeaders,
-    timeout: TIMEOUTS.SOUNDCLOUD_MS
-  });
 }
 
 /**

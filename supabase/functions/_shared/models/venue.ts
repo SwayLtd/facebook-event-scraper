@@ -8,6 +8,7 @@ import { withRetry } from '../utils/retry.ts';
 import { FUZZY_THRESHOLD } from '../utils/constants.ts';
 import { getNormalizedName } from '../utils/name.ts';
 import { areAddressesSimilar, fetchAddressFromNominatim } from '../utils/geo.ts';
+import { downloadAndUploadToR2 } from '../utils/r2.ts';
 import { Venue, GooglePlace } from '../types/index.ts';
 
 /**
@@ -475,12 +476,18 @@ export async function createOrUpdateVenue(
 
           logger.info(`Successfully enriched venue "${venueData.name}" with Google Places data`);
           
-          // Try to get venue photo
+          // Try to get venue photo and upload to R2
           try {
             if (enrichedVenueData.location) {
               const photoUrl = await fetchGoogleVenuePhoto(venueData.name, enrichedVenueData.location);
-              enrichedVenueData.image_url = photoUrl;
-              logger.info(`Found venue photo for "${venueData.name}"`);
+              // Upload venue photo to R2
+              try {
+                enrichedVenueData.image_url = await downloadAndUploadToR2(photoUrl, 'venues');
+                logger.info(`Venue photo uploaded to R2 for "${venueData.name}"`);
+              } catch (r2Error) {
+                enrichedVenueData.image_url = photoUrl;
+                logger.warn(`Failed to upload venue photo to R2, using original URL for "${venueData.name}"`, r2Error);
+              }
             }
           } catch (photoError) {
             logger.warn(`Could not fetch venue photo for "${venueData.name}"`, photoError);

@@ -5,6 +5,7 @@ import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { db } from '../utils/database.ts';
 import { logger } from '../utils/logger.ts';
 import { normalizeNameEnhanced } from '../utils/name.ts';
+import { downloadAndUploadToR2 } from '../utils/r2.ts';
 import { FUZZY_THRESHOLD, BANNED_GENRES_SLUGS, MIN_GENRE_OCCURRENCE, MAX_GENRES_REGULAR, MAX_GENRES_FESTIVAL, FESTIVAL_FALLBACK_GENRES } from '../utils/constants.ts';
 import { Promoter } from '../types/index.ts';
 
@@ -147,13 +148,15 @@ async function tryGetBestImage(
     || existingExternalLinks?.facebook?.link
     || null;
 
+  let imageUrl: string | null = null;
+
   // 1) Try og:image scraping (best quality, no token needed)
   if (facebookPageUrl) {
     try {
       const ogImage = await scrapePromoterImage(facebookPageUrl);
       if (ogImage) {
         logger.info('Got high-quality image via og:image scraping');
-        return ogImage;
+        imageUrl = ogImage;
       }
     } catch (error) {
       logger.warn('og:image scraping failed, trying fallbacks', error);
@@ -161,26 +164,38 @@ async function tryGetBestImage(
   }
 
   // 2) Try Facebook Graph API (needs LONG_LIVED_TOKEN)
-  const objectId = promoterSource?.id || existingExternalLinks?.facebook?.id || null;
-  if (objectId) {
-    try {
-      const graphImage = await fetchHighResImage(objectId);
-      if (graphImage) {
-        logger.info('Got high-quality image via Facebook Graph API');
-        return graphImage;
+  if (!imageUrl) {
+    const objectId = promoterSource?.id || existingExternalLinks?.facebook?.id || null;
+    if (objectId) {
+      try {
+        const graphImage = await fetchHighResImage(objectId);
+        if (graphImage) {
+          logger.info('Got high-quality image via Facebook Graph API');
+          imageUrl = graphImage;
+        }
+      } catch (error) {
+        logger.warn('Graph API image fetch failed', error);
       }
-    } catch (error) {
-      logger.warn('Graph API image fetch failed', error);
     }
   }
 
   // 3) Fallback to thumbnail from event host data
-  if (promoterSource?.photo?.imageUri) {
+  if (!imageUrl && promoterSource?.photo?.imageUri) {
     logger.info('Using thumbnail fallback from event host data');
-    return promoterSource.photo.imageUri;
+    imageUrl = promoterSource.photo.imageUri;
   }
 
-  return null;
+  // Upload to R2 if we found an image
+  if (imageUrl) {
+    try {
+      imageUrl = await downloadAndUploadToR2(imageUrl, 'promoters');
+      logger.info('Promoter image uploaded to R2');
+    } catch (r2Error) {
+      logger.warn('Failed to upload promoter image to R2, using original URL', r2Error);
+    }
+  }
+
+  return imageUrl;
 }
 
 /**

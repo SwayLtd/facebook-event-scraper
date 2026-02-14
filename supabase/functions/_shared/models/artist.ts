@@ -10,6 +10,7 @@ import { normalizeNameEnhanced, cleanArtistName, areNamesSimilar } from '../util
 import { enrichArtistData, applyEnrichmentToArtist } from '../utils/enrichment.ts';
 import { normalizeExternalLinks } from '../utils/social.ts';
 import { withRetry } from '../utils/retry.ts';
+import { downloadAndUploadToR2 } from '../utils/r2.ts';
 import genreModel from './genre.ts';
 import { Artist, SoundCloudUser, SoundCloudTrack, EnrichmentResult } from '../types/index.ts';
 
@@ -134,9 +135,20 @@ export async function searchArtist(artistName: string): Promise<SoundCloudUser |
 export async function extractArtistInfo(artist: SoundCloudUser): Promise<Partial<Artist>> {
   const bestImageUrl = await getBestImageUrl(artist.avatar_url);
   
+  // Upload artist image to R2 if available
+  let finalImageUrl = bestImageUrl || undefined;
+  if (finalImageUrl) {
+    try {
+      finalImageUrl = await downloadAndUploadToR2(finalImageUrl, 'artists');
+      logger.info(`Artist image uploaded to R2 for "${artist.username}"`);
+    } catch (imgError) {
+      logger.warn(`Failed to upload artist image to R2 for "${artist.username}", using original`, imgError);
+    }
+  }
+  
   let artistData: Partial<Artist> = {
     name: artist.username,
-    image_url: bestImageUrl || undefined,
+    image_url: finalImageUrl,
     description: artist.description || undefined,
     location_info: {
       country: artist.country || undefined,

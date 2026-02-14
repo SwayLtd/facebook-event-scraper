@@ -24,6 +24,9 @@ import { logger } from '../_shared/utils/logger.ts';
 import { withRetry } from '../_shared/utils/retry.ts';
 import { BANNED_GENRES } from '../_shared/utils/constants.ts';
 
+// Import du module R2 pour l'upload des images
+import { downloadAndUploadToR2, downloadAndUploadEntityImage, isR2Configured } from '../_shared/utils/r2.ts';
+
 // Import du modèle artist pour le traitement simplifié
 import { processSimpleEventArtists } from '../_shared/models/artist.ts';
 
@@ -398,7 +401,7 @@ Deno.serve(async (req) => {
     let eventDbId = null;
     const { data: eventsByUrl } = await supabase
       .from('events')
-      .select('id, metadata, description, date_time, end_date_time')
+      .select('id, metadata, description, date_time, end_date_time, image_url')
       .ilike('metadata->>facebook_url', fbEventUrl);
 
     if (eventsByUrl && eventsByUrl.length > 0) {
@@ -419,6 +422,43 @@ Deno.serve(async (req) => {
         updates.end_date_time = endTimeISO;
       }
 
+      // === TICKET LINK UPDATE ===
+      // Update metadata.ticket_link if the scraped event has a ticket URL
+      // that differs from the one stored (or is newly added)
+      if (eventData.ticketUrl) {
+        const existingMetadata = existing.metadata || {};
+        const currentTicketLink = typeof existingMetadata === 'object'
+          ? existingMetadata.ticket_link
+          : null;
+
+        if (currentTicketLink !== eventData.ticketUrl) {
+          const updatedMetadata = typeof existingMetadata === 'object'
+            ? { ...existingMetadata, ticket_link: eventData.ticketUrl }
+            : { facebook_url: fbEventUrl, ticket_link: eventData.ticketUrl };
+          updates.metadata = updatedMetadata;
+          logger.info(`Ticket link updated for event ${eventDbId}`, {
+            previous: currentTicketLink || '<none>',
+            new: eventData.ticketUrl
+          });
+        }
+      }
+
+      // === IMAGE R2 MIGRATION ===
+      // If image_url is not already on R2, migrate it
+      const currentImageUrl = existing.image_url || '';
+      const isAlreadyR2 = currentImageUrl.includes('r2.dev') || currentImageUrl.includes('r2.cloudflarestorage.com') || currentImageUrl.includes('assets.sway.events');
+      if (!isAlreadyR2 && currentImageUrl) {
+        try {
+          const r2Url = await downloadAndUploadEntityImage(currentImageUrl, 'events', eventDbId, 'cover');
+          if (r2Url !== currentImageUrl) {
+            updates.image_url = r2Url;
+            logger.info(`Event image migrated to R2: ${r2Url}`);
+          }
+        } catch (imgError) {
+          logger.warn('Failed to migrate event image to R2', imgError);
+        }
+      }
+
       if (Object.keys(updates).length > 0) {
         await supabase.from('events').update(updates).eq('id', eventDbId);
         logger.info(`Event updated (id=${eventDbId})`, updates);
@@ -432,25 +472,40 @@ Deno.serve(async (req) => {
         metadata.ticket_link = eventData.ticketUrl;
       }
       
-      const eventRecord = {
-        title: eventName,
-        type: eventType,
-        date_time: startTimeISO,
-        end_date_time: endTimeISO,
-        description: eventDescription,
-        image_url: eventData.photo?.imageUri || null,
-        metadata: metadata
-      };
-      
+      // Upload event image to R2 if available
+      let eventImageUrl = eventData.photo?.imageUri || null;
+
       const { data: newEvent, error: insertError } = await supabase
         .from('events')
-        .insert(eventRecord)
+        .insert({
+          title: eventName,
+          type: eventType,
+          date_time: startTimeISO,
+          end_date_time: endTimeISO,
+          description: eventDescription,
+          image_url: eventImageUrl, // temporary, updated after insert with entity ID
+          metadata: metadata
+        })
         .select('id')
         .single();
         
       if (newEvent) {
         eventDbId = newEvent.id;
         logger.info(`Event created successfully (id=${eventDbId})`);
+
+        // Now upload image to R2 with proper entity path: event/{id}/cover/
+        if (eventImageUrl) {
+          try {
+            logger.info('Uploading event image to R2...');
+            const r2Url = await downloadAndUploadEntityImage(eventImageUrl, 'events', eventDbId, 'cover');
+            if (r2Url !== eventImageUrl) {
+              await supabase.from('events').update({ image_url: r2Url }).eq('id', eventDbId);
+              logger.info(`Event image uploaded to R2: ${r2Url}`);
+            }
+          } catch (imgError) {
+            logger.warn('Failed to upload event image to R2, keeping original URL', imgError);
+          }
+        }
       } else {
         throw new Error(`Event creation failed: ${insertError?.message}`);
       }

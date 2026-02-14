@@ -51,6 +51,7 @@
   "homepage": "https://github.com/francescov1/facebook-event-scraper#readme",
   "dependencies": {
     "@supabase/supabase-js": "^2.49.4",
+    "aws4fetch": "^1.0.20",
     "axios": "^1.8.4",
     "cli-progress": "^3.12.0",
     "csv-parse": "^6.1.0",

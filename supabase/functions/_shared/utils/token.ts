@@ -1,75 +1,138 @@
-// Token management utilities pour Edge Functions  
-// Adaptation du système de token JavaScript local avec stockage Supabase
+// Token management utilities pour Edge Functions
+// Memory cache + Supabase api_tokens persistence to avoid SoundCloud rate-limits
+// Flow: memory cache → Supabase api_tokens table → fresh OAuth token
 
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
+import { createClient } from 'jsr:@supabase/supabase-js@2';
 import { logger } from './logger.ts';
-import { withRetry, withApiRetry } from './retry.ts';
+import { withApiRetry } from './retry.ts';
 import { TokenConfig } from '../types/index.ts';
 
-// Interface pour les tokens stockés
-interface StoredToken {
+// Interface pour les tokens en cache
+interface CachedToken {
   token: string;
   expiration: number;
-  type: 'soundcloud' | 'facebook' | 'lastfm';
-  created_at: string;
 }
 
 class TokenManager {
-  private tokens: Map<string, StoredToken> = new Map();
+  private tokens: Map<string, CachedToken> = new Map();
   
   constructor() {}
 
   /**
-   * Get stored token from memory cache or environment
+   * Get Supabase client for token persistence
+   */
+  private getSupabaseClient() {
+    const url = Deno.env.get('SUPABASE_URL');
+    const key = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY');
+    if (!url || !key) return null;
+    return createClient(url, key);
+  }
+
+  /**
+   * Get token from memory cache, then Supabase persistence
    * @param tokenType - Type of token to retrieve
    * @returns Token string or null if not found/expired
    */
   private async getStoredToken(tokenType: string): Promise<string | null> {
-    // Check memory cache first
+    // 1. Memory cache (fastest, survives warm invocations)
     const cached = this.tokens.get(tokenType);
     if (cached && cached.expiration > Date.now()) {
+      logger.debug(`Token ${tokenType}: found in memory cache (expires ${new Date(cached.expiration).toISOString()})`);
       return cached.token;
     }
 
-    // For Edge Functions, tokens are typically passed as environment variables
-    // or stored in Supabase using the database client if needed for persistence
-    
+    // 2. Supabase api_tokens table (survives cold starts)
+    try {
+      const supabase = this.getSupabaseClient();
+      if (supabase) {
+        const { data, error } = await supabase
+          .from('api_tokens')
+          .select('token, expiration')
+          .eq('type', tokenType)
+          .single();
+
+        if (!error && data && data.expiration > Date.now()) {
+          logger.info(`Token ${tokenType}: found in Supabase (expires ${new Date(data.expiration).toISOString()})`);
+          this.tokens.set(tokenType, { token: data.token, expiration: data.expiration });
+          return data.token;
+        } else if (data && data.expiration <= Date.now()) {
+          logger.info(`Token ${tokenType}: found in Supabase but expired, will refresh`);
+        }
+      }
+    } catch (err) {
+      logger.warn(`Failed to check Supabase for stored ${tokenType} token`, err);
+    }
+
     return null;
   }
 
   /**
-   * Store token in memory cache
+   * Store token in memory cache AND Supabase for persistence across cold starts
    * @param tokenType - Type of token
    * @param token - Token value
    * @param expiresIn - Expiration time in seconds
    */
   private async storeToken(tokenType: string, token: string, expiresIn: number): Promise<void> {
     const expiration = Date.now() + expiresIn * 1000;
-    
-    const storedToken: StoredToken = {
-      token,
-      expiration,
-      type: tokenType as any,
-      created_at: new Date().toISOString()
-    };
 
-    this.tokens.set(tokenType, storedToken);
-    
-    logger.info(`Token stored: ${tokenType}`, {
-      type: tokenType,
-      expires_in_seconds: expiresIn,
-      expires_at: new Date(expiration).toISOString()
-    });
+    // 1. Memory cache
+    this.tokens.set(tokenType, { token, expiration });
+
+    // 2. Supabase persistence
+    try {
+      const supabase = this.getSupabaseClient();
+      if (supabase) {
+        const { error } = await supabase
+          .from('api_tokens')
+          .upsert({
+            type: tokenType,
+            token,
+            expiration,
+            updated_at: new Date().toISOString()
+          }, { onConflict: 'type' });
+
+        if (error) {
+          logger.warn(`Failed to persist ${tokenType} token to Supabase`, { error: error.message });
+        } else {
+          logger.info(`Token persisted to Supabase: ${tokenType}`, {
+            expires_in_seconds: expiresIn,
+            expires_at: new Date(expiration).toISOString()
+          });
+        }
+      }
+    } catch (err) {
+      logger.warn(`Error persisting ${tokenType} token to Supabase`, err);
+    }
+  }
+
+  /**
+   * Force invalidate a cached token (e.g., on 401 response)
+   * @param tokenType - Type of token to invalidate
+   */
+  async invalidateToken(tokenType: string): Promise<void> {
+    logger.info(`Invalidating token: ${tokenType}`);
+    this.tokens.delete(tokenType);
+
+    try {
+      const supabase = this.getSupabaseClient();
+      if (supabase) {
+        await supabase.from('api_tokens').delete().eq('type', tokenType);
+      }
+    } catch (err) {
+      logger.warn(`Failed to delete ${tokenType} token from Supabase`, err);
+    }
   }
 
   /**
    * Get SoundCloud access token (OAuth client credentials flow)
+   * With automatic retry on failure and Supabase persistence
    * @param clientId - SoundCloud client ID
    * @param clientSecret - SoundCloud client secret
    * @returns Access token or null
    */
   async getSoundCloudToken(clientId?: string, clientSecret?: string): Promise<string | null> {
-    // Try to get from stored tokens first
+    // Try memory cache → Supabase persistence
     let token = await this.getStoredToken('soundcloud');
     if (token) {
       logger.debug('Using cached SoundCloud token');
@@ -77,11 +140,16 @@ class TokenManager {
     }
 
     // Get credentials from environment if not provided
-    const actualClientId = clientId || Deno.env.get('SOUNDCLOUD_CLIENT_ID');
-    const actualClientSecret = clientSecret || Deno.env.get('SOUNDCLOUD_CLIENT_SECRET');
+    // Support both naming conventions: SOUND_CLOUD_CLIENT_ID and SOUNDCLOUD_CLIENT_ID
+    const actualClientId = clientId
+      || Deno.env.get('SOUND_CLOUD_CLIENT_ID')
+      || Deno.env.get('SOUNDCLOUD_CLIENT_ID');
+    const actualClientSecret = clientSecret
+      || Deno.env.get('SOUND_CLOUD_CLIENT_SECRET')
+      || Deno.env.get('SOUNDCLOUD_CLIENT_SECRET');
 
     if (!actualClientId || !actualClientSecret) {
-      logger.warn('SoundCloud credentials not available');
+      logger.warn('SoundCloud credentials not available (checked SOUND_CLOUD_CLIENT_ID, SOUNDCLOUD_CLIENT_ID)');
       return null;
     }
 
@@ -181,8 +249,8 @@ class TokenManager {
    */
   async getTokenConfig(): Promise<TokenConfig> {
     return {
-      soundcloud_client_id: Deno.env.get('SOUNDCLOUD_CLIENT_ID'),
-      soundcloud_client_secret: Deno.env.get('SOUNDCLOUD_CLIENT_SECRET'),
+      soundcloud_client_id: Deno.env.get('SOUND_CLOUD_CLIENT_ID') || Deno.env.get('SOUNDCLOUD_CLIENT_ID'),
+      soundcloud_client_secret: Deno.env.get('SOUND_CLOUD_CLIENT_SECRET') || Deno.env.get('SOUNDCLOUD_CLIENT_SECRET'),
       facebook_access_token: await this.getFacebookToken() || undefined,
       lastfm_api_key: await this.getLastFmApiKey() || undefined,
       openai_api_key: await this.getOpenAiApiKey() || undefined,
@@ -204,8 +272,8 @@ class TokenManager {
       
       switch (tokenType) {
         case 'soundcloud':
-          const soundcloudClientId = Deno.env.get('SOUNDCLOUD_CLIENT_ID');
-          const soundcloudClientSecret = Deno.env.get('SOUNDCLOUD_CLIENT_SECRET');
+          const soundcloudClientId = Deno.env.get('SOUND_CLOUD_CLIENT_ID') || Deno.env.get('SOUNDCLOUD_CLIENT_ID');
+          const soundcloudClientSecret = Deno.env.get('SOUND_CLOUD_CLIENT_SECRET') || Deno.env.get('SOUNDCLOUD_CLIENT_SECRET');
           hasToken = !!(soundcloudClientId && soundcloudClientSecret);
           break;
         case 'facebook':
