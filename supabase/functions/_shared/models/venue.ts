@@ -8,7 +8,7 @@ import { withRetry } from '../utils/retry.ts';
 import { FUZZY_THRESHOLD } from '../utils/constants.ts';
 import { getNormalizedName } from '../utils/name.ts';
 import { areAddressesSimilar, fetchAddressFromNominatim } from '../utils/geo.ts';
-import { downloadAndUploadToR2 } from '../utils/r2.ts';
+import { downloadAndUploadEntityImage } from '../utils/r2.ts';
 import { Venue, GooglePlace } from '../types/index.ts';
 
 /**
@@ -476,18 +476,12 @@ export async function createOrUpdateVenue(
 
           logger.info(`Successfully enriched venue "${venueData.name}" with Google Places data`);
           
-          // Try to get venue photo and upload to R2
+          // Try to get venue photo (raw URL — R2 upload happens after insert with entity ID)
           try {
             if (enrichedVenueData.location) {
               const photoUrl = await fetchGoogleVenuePhoto(venueData.name, enrichedVenueData.location);
-              // Upload venue photo to R2
-              try {
-                enrichedVenueData.image_url = await downloadAndUploadToR2(photoUrl, 'venues');
-                logger.info(`Venue photo uploaded to R2 for "${venueData.name}"`);
-              } catch (r2Error) {
-                enrichedVenueData.image_url = photoUrl;
-                logger.warn(`Failed to upload venue photo to R2, using original URL for "${venueData.name}"`, r2Error);
-              }
+              enrichedVenueData.image_url = photoUrl;
+              logger.info(`Venue photo found for "${venueData.name}"`);
             }
           } catch (photoError) {
             logger.warn(`Could not fetch venue photo for "${venueData.name}"`, photoError);
@@ -509,6 +503,20 @@ export async function createOrUpdateVenue(
     // Create venue in database
     const createdVenue = await db.createVenue(enrichedVenueData);
     logger.info(`Created venue: ${createdVenue.name} (ID: ${createdVenue.id})`);
+
+    // Upload image to R2 with structured path: venues/{id}/cover/
+    if (createdVenue.id && createdVenue.image_url && !createdVenue.image_url.includes('assets.sway.events')) {
+      try {
+        const r2Url = await downloadAndUploadEntityImage(createdVenue.image_url, 'venues', createdVenue.id);
+        if (r2Url !== createdVenue.image_url) {
+          await db.client.from('venues').update({ image_url: r2Url }).eq('id', createdVenue.id);
+          createdVenue.image_url = r2Url;
+          logger.info(`Venue image uploaded to R2: ${r2Url}`);
+        }
+      } catch (imgError) {
+        logger.warn(`Failed to upload venue image to R2 for "${createdVenue.name}"`, imgError);
+      }
+    }
 
     return createdVenue;
 

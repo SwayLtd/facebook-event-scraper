@@ -8,6 +8,7 @@ import { tokenManager } from '../utils/token.ts';
 import { soundCloudApi } from '../utils/api.ts';
 import { normalizeNameEnhanced } from '../utils/name.ts';
 import { EventArtist } from '../types/index.ts';
+import { downloadAndUploadEntityImage } from '../utils/r2.ts';
 import { searchArtist, extractArtistInfo, insertOrUpdateArtist } from './artist.ts';
 import { updateEventMetadata, linkArtistsToEvent } from './event.ts';
 import genreModel from './genre.ts';
@@ -875,11 +876,20 @@ export async function processFestivalTimetable(
         if (existingId) {
           // Enrich existing artist
           if (soundCloudData?.external_links) {
+            // Upload image to R2 with structured path before updating DB
+            let imageUrl = soundCloudData.image_url;
+            if (imageUrl && !imageUrl.includes('assets.sway.events')) {
+              try {
+                imageUrl = await downloadAndUploadEntityImage(imageUrl, 'artists', existingId);
+              } catch (r2Error) {
+                logger.warn(`Failed to upload artist image to R2 for ${perf.name}`, r2Error);
+              }
+            }
             await db.client
               .from('artists')
               .update({
                 external_links: soundCloudData.external_links,
-                ...(soundCloudData.image_url ? { image_url: soundCloudData.image_url } : {}),
+                ...(imageUrl ? { image_url: imageUrl } : {}),
                 ...(soundCloudData.description ? { description: soundCloudData.description } : {})
               })
               .eq('id', existingId);

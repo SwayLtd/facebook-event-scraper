@@ -5,7 +5,7 @@ import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { db } from '../utils/database.ts';
 import { logger } from '../utils/logger.ts';
 import { normalizeNameEnhanced } from '../utils/name.ts';
-import { downloadAndUploadToR2 } from '../utils/r2.ts';
+import { downloadAndUploadEntityImage } from '../utils/r2.ts';
 import { FUZZY_THRESHOLD, BANNED_GENRES_SLUGS, MIN_GENRE_OCCURRENCE, MAX_GENRES_REGULAR, MAX_GENRES_FESTIVAL, FESTIVAL_FALLBACK_GENRES } from '../utils/constants.ts';
 import { Promoter } from '../types/index.ts';
 
@@ -185,16 +185,7 @@ async function tryGetBestImage(
     imageUrl = promoterSource.photo.imageUri;
   }
 
-  // Upload to R2 if we found an image
-  if (imageUrl) {
-    try {
-      imageUrl = await downloadAndUploadToR2(imageUrl, 'promoters');
-      logger.info('Promoter image uploaded to R2');
-    } catch (r2Error) {
-      logger.warn('Failed to upload promoter image to R2, using original URL', r2Error);
-    }
-  }
-
+  // Return raw image URL — R2 upload happens at call site with entity ID
   return imageUrl;
 }
 
@@ -312,8 +303,14 @@ export async function findOrInsertPromoter(
 
       // Upgrade image if missing or low-quality (small thumbnail)
       if (!promoter.image_url || isLowQualityImage(promoter.image_url)) {
-        const upgradedImage = await tryGetBestImage(promoterSource, promoter.external_links);
+        let upgradedImage = await tryGetBestImage(promoterSource, promoter.external_links);
         if (upgradedImage) {
+          // Upload to R2 with structured path: promoters/{id}/cover/
+          try {
+            upgradedImage = await downloadAndUploadEntityImage(upgradedImage, 'promoters', promoter.id);
+          } catch (r2Error) {
+            logger.warn(`Failed to upload promoter image to R2 for id=${promoter.id}`, r2Error);
+          }
           try {
             const { error: imgError } = await db.client
               .from('promoters')
@@ -386,8 +383,14 @@ export async function findOrInsertPromoter(
 
         // Upgrade image if missing or low-quality (small thumbnail)
         if (!bestMatch.image_url || isLowQualityImage(bestMatch.image_url)) {
-          const upgradedImage = await tryGetBestImage(promoterSource, bestMatch.external_links);
+          let upgradedImage = await tryGetBestImage(promoterSource, bestMatch.external_links);
           if (upgradedImage) {
+            // Upload to R2 with structured path: promoters/{id}/cover/
+            try {
+              upgradedImage = await downloadAndUploadEntityImage(upgradedImage, 'promoters', bestMatch.id);
+            } catch (r2Error) {
+              logger.warn(`Failed to upload promoter image to R2 for id=${bestMatch.id}`, r2Error);
+            }
             try {
               const { error: imgError } = await db.client
                 .from('promoters')
@@ -440,6 +443,20 @@ export async function findOrInsertPromoter(
 
     const createdPromoter = inserted as Promoter;
     logger.info(`Promoter inserted: "${promoterName}" → id=${createdPromoter.id}`);
+
+    // Upload image to R2 with structured path: promoters/{id}/cover/
+    if (createdPromoter.id && createdPromoter.image_url && !createdPromoter.image_url.includes('assets.sway.events')) {
+      try {
+        const r2Url = await downloadAndUploadEntityImage(createdPromoter.image_url, 'promoters', createdPromoter.id);
+        if (r2Url !== createdPromoter.image_url) {
+          await db.client.from('promoters').update({ image_url: r2Url }).eq('id', createdPromoter.id);
+          createdPromoter.image_url = r2Url;
+          logger.info(`Promoter image uploaded to R2: ${r2Url}`);
+        }
+      } catch (imgError) {
+        logger.warn(`Failed to upload promoter image to R2 for "${promoterName}"`, imgError);
+      }
+    }
     
     return createdPromoter;
 

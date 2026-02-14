@@ -10,7 +10,7 @@ import { normalizeNameEnhanced, cleanArtistName, areNamesSimilar } from '../util
 import { enrichArtistData, applyEnrichmentToArtist } from '../utils/enrichment.ts';
 import { normalizeExternalLinks } from '../utils/social.ts';
 import { withRetry } from '../utils/retry.ts';
-import { downloadAndUploadToR2 } from '../utils/r2.ts';
+import { downloadAndUploadEntityImage } from '../utils/r2.ts';
 import genreModel from './genre.ts';
 import { Artist, SoundCloudUser, SoundCloudTrack, EnrichmentResult } from '../types/index.ts';
 
@@ -135,16 +135,8 @@ export async function searchArtist(artistName: string): Promise<SoundCloudUser |
 export async function extractArtistInfo(artist: SoundCloudUser): Promise<Partial<Artist>> {
   const bestImageUrl = await getBestImageUrl(artist.avatar_url);
   
-  // Upload artist image to R2 if available
-  let finalImageUrl = bestImageUrl || undefined;
-  if (finalImageUrl) {
-    try {
-      finalImageUrl = await downloadAndUploadToR2(finalImageUrl, 'artists');
-      logger.info(`Artist image uploaded to R2 for "${artist.username}"`);
-    } catch (imgError) {
-      logger.warn(`Failed to upload artist image to R2 for "${artist.username}", using original`, imgError);
-    }
-  }
+  // Keep original image URL — R2 upload happens after entity insert (with entity ID)
+  const finalImageUrl = bestImageUrl || undefined;
   
   let artistData: Partial<Artist> = {
     name: artist.username,
@@ -308,6 +300,20 @@ export async function findOrInsertArtist(
     const newArtist = await db.createArtist(artistData as Omit<Artist, "id" | "created_at" | "updated_at">);
     logger.info(`Artist inserted: "${artistName}" (id=${newArtist.id})`);
 
+    // Upload image to R2 with structured path: artists/{id}/cover/
+    if (newArtist.id && newArtist.image_url && !newArtist.image_url.includes('assets.sway.events')) {
+      try {
+        const r2Url = await downloadAndUploadEntityImage(newArtist.image_url, 'artists', newArtist.id);
+        if (r2Url !== newArtist.image_url) {
+          await db.client.from('artists').update({ image_url: r2Url }).eq('id', newArtist.id);
+          newArtist.image_url = r2Url;
+          logger.info(`Artist image uploaded to R2: ${r2Url}`);
+        }
+      } catch (imgError) {
+        logger.warn(`Failed to upload artist image to R2 for "${artistName}"`, imgError);
+      }
+    }
+
     // Process and link genres
     if (enableGenreProcessing) {
       try {
@@ -413,6 +419,20 @@ export async function insertOrUpdateArtist(
       // Update existing artist
       const updated = await db.updateArtist(existingArtist.id!, artistRecord);
       logger.info(`Updated artist: ${updated.name} (ID: ${updated.id})`);
+
+      // Upload image to R2 with structured path if not already on R2
+      if (updated.id && updated.image_url && !updated.image_url.includes('assets.sway.events')) {
+        try {
+          const r2Url = await downloadAndUploadEntityImage(updated.image_url, 'artists', updated.id);
+          if (r2Url !== updated.image_url) {
+            await db.client.from('artists').update({ image_url: r2Url }).eq('id', updated.id);
+            logger.info(`Artist image uploaded to R2: ${r2Url}`);
+          }
+        } catch (imgError) {
+          logger.warn(`Failed to upload artist image to R2 for "${updated.name}"`, imgError);
+        }
+      }
+
       return { id: updated.id! };
     } else {
       // Insert new artist
@@ -422,6 +442,20 @@ export async function insertOrUpdateArtist(
       
       const inserted = await db.createArtist(artistRecord as Omit<Artist, "id" | "created_at" | "updated_at">);
       logger.info(`Inserted new artist: ${inserted.name} (ID: ${inserted.id})`);
+
+      // Upload image to R2 with structured path
+      if (inserted.id && inserted.image_url && !inserted.image_url.includes('assets.sway.events')) {
+        try {
+          const r2Url = await downloadAndUploadEntityImage(inserted.image_url, 'artists', inserted.id);
+          if (r2Url !== inserted.image_url) {
+            await db.client.from('artists').update({ image_url: r2Url }).eq('id', inserted.id);
+            logger.info(`Artist image uploaded to R2: ${r2Url}`);
+          }
+        } catch (imgError) {
+          logger.warn(`Failed to upload artist image to R2 for "${inserted.name}"`, imgError);
+        }
+      }
+
       return { id: inserted.id! };
     }
 
